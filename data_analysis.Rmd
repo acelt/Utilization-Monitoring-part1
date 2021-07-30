@@ -1,0 +1,493 @@
+---
+title: "Chapter 1 Data Analysis"
+date: 7/30/2021
+author: Alex Traynor
+output: html_notebook
+---
+
+```{r setup}
+library(RODBC)
+library(tidyverse)
+library(stringr)
+library(MASS)
+
+# Set the filepath for data
+wd <- "C:\\Users\\alaurencetraynor\\Documents\\2019\\UI\\Chapter 1\\Data\\"
+```
+
+### Import data
+```{r}
+all_pasture <-  read.csv(paste0(wd,"all_pasture_plot.csv")) # this is all the summarized data from each utilization method
+
+# all the tidy stocking rate data
+ 
+```
+
+
+### Ocular Models
+```{r}
+ocular_naomit <- na.omit(ocular)
+
+data <- ocular_naomit
+
+oc_mod <- lm(AvgRemoved ~ Site + Year , data = data)
+summary(oc_mod)
+
+oc_mod_upper <- lm(AvgRemoved ~ Site + Year + ObsID1 + ObsID2  + Position + SiteMove + Performance_Rating + minsatplot + daysemployeed + Species +PctShrubCover + AvgShrubHt + Treatment + PastureName + AvgEff_Ht +AvgMaxHt +AvgMaxLeaf, data = data)
+
+summary(oc_mod_upper)
+
+library(MASS)
+
+stepwise <- stepAIC(oc_mod, scope = list(upper = oc_mod_upper, lower = oc_mod), direction = "both")
+
+oc_mod2 <- lm(AvgRemoved ~ Site + Year + ObsID2+SiteMove, data = ocular)
+summary(oc_mod2)
+
+oc_mod3 <- lm(AvgRemoved ~ Site + Year + PastureName + AvgMaxHt + SiteMove, data = data)
+summary(oc_mod3)
+
+oc_mod4 <- lm(AvgRemoved ~ Site + Year + ObsID2 + Performance_Rating, data = ocular)
+summary(oc_mod4)
+
+anova(oc_mod4,oc_mod)
+
+ggplot(data = util_join, aes(x=AvgRemoved, y = percent_grazed))+
+  geom_point()
+
+# testing between movers
+
+movers <- subset(data, SiteMove == "Yes")
+stayers <- subset(data, SiteMove == "No")
+
+t.test(movers$AvgRemoved,stayers$AvgRemoved)
+```
+# Frequency models
+
+```{r}
+util_join_nona <- na.omit(util_join)
+data <- util_join_nona
+
+oc_mod <- lm(percent_grazed ~ Site + Year , data = data)
+summary(oc_mod)
+
+oc_mod_upper <- lm(percent_grazed ~ Site + Year + ObsID1 + ObsID2 + Position + SiteMove + Performance_Rating + minsatplot + daysemployeed, data = data)
+
+summary(oc_mod_upper)
+
+stepwise <- stepAIC(oc_mod, scope = list(upper = oc_mod_upper, lower = oc_mod), direction = "both")
+
+oc_mod2 <- lm(percent_grazed ~ Site + Year + ObsID2 + ObsID1, data = util_join)
+summary(oc_mod2)
+
+oc_mod3 <- lm(percent_grazed ~ Site + Year + ObsID1, data = util_join)
+summary(oc_mod3)
+
+oc_mod4 <- lm(percent_grazed ~ Site + Year + ObsID2 + Performance_Rating, data = util_join)
+summary(oc_mod4)
+
+anova(oc_mod4,oc_mod)
+
+ggplot(data = util_join, aes(x=minsatplot, y=AvgRemoved,col =Site))+
+  geom_boxplot()+
+  facet_wrap(.~Year)
+```
+# Paired plot models
+```{r}
+
+
+pp_raw <- pp_raw %>%
+  filter(Frame == "SubplotWt")%>%
+  group_by(PointID)%>%
+  summarise(TotalCaged = sum(Caged), TotalUncaged= sum(UnCaged))%>%
+  mutate(Wtdiff = (TotalCaged-TotalUncaged)/TotalCaged*100)
+
+pp_raw$Wtdiff[pp_raw$Wtdiff<0] <- 0
+
+partial_join <- function(x, y, by_x, pattern_y){
+ idx_x <- sapply(y[[pattern_y]], grep, x[[by_x]])
+ idx_y <- sapply(seq_along(idx_x), function(i) rep(i, length(idx_x[[i]])))
+
+ df <- dplyr::bind_cols(x[unlist(idx_x), , drop = F],
+                        y[unlist(idx_y), , drop = F])
+ return(df)
+}
+
+pp_join <- partial_join(x = util_join, y= pp_raw, by_x = "PointID", pattern_y = "PointID") %>%
+  filter(Year == "2018")%>%
+  dplyr::select(-c(PointID1,TotalCaged,TotalUncaged))
+
+pp_join_nona <- na.omit(pp_join)
+
+ggplot(pp_join, aes(x=percent_grazed, y=Wtdiff))+
+  geom_point()+
+  geom_smooth(method= "lm", se=FALSE)+
+  theme_classic(base_size = 14, base_family = "serif")
+  
+bb <- subset(pp_join, Site == 'BRBE')
+
+bbmod <- lm(AvgRemoved~Wtdiff,data = pp_join)
+summary(bbmod)
+
+bbmod2 <- lm(percent_grazed~Wtdiff,data = pp_join)
+summary(bbmod2)
+
+# stepwise selection wiht paired plots 
+pp_mod <- lm(Wtdiff ~ Site , data = pp_join)
+summary(pp_mod)
+
+pp_mod_upper <- lm(Wtdiff~ Site + ObsID1 + ObsID2 + Position + SiteMove + Performance_Rating + minsatplot + daysemployeed, data = pp_join)
+
+summary(pp_mod_upper)
+
+stepwise <- stepAIC(pp_mod, scope = list(upper = pp_mod_upper, lower = pp_mod), direction = "both")
+
+cor(pp_join$AvgRemoved,pp_join$Wtdiff, method = "pearson")
+cor(pp_join$percent_grazed,pp_join$Wtdiff, method = "pearson")
+
+plot(pp_join$percent_grazed,pp_join$Wtdiff)
+```
+
+# Removing first time observers
+```{r}
+pp_join_subset <- subset(pp_join, SiteMove == "No")
+ppmod <- lm(percent_grazed~Wtdiff,data = pp_join_subset)
+summary(ppmod)
+
+c1 <-  cor(pp_join_subset$percent_grazed, pp_join_subset$Wtdiff)
+
+pp_join_subset2 <- subset(pp_join, SiteMove == "Yes")
+ppmod2 <- lm(percent_grazed~Wtdiff,data = pp_join_subset2)
+summary(ppmod2)
+
+c2 <-  cor(pp_join_subset2$percent_grazed, pp_join_subset2$Wtdiff)
+
+
+# test significance in difference
+zobserved <-  function(z1,z2,n1,n2){
+  zobserved = (z1 - z2) / sqrt((1 / (n1 - 3)) + (1 / (n2 - 3)))
+  print(zobserved)
+}
+
+n1 <- 24
+n2 <- 45
+zobserved(c1,c2,n1,n2)
+
+DescTools::CorCI(c1, n1, conf.level = 0.90, alternative = "two.sided")
+DescTools::CorCI(c2, n2, conf.level = 0.90, alternative = "two.sided")
+
+ggplot(pp_join_subset, aes(x=percent_grazed,y=Wtdiff))+
+  geom_point(col="orange")+
+  theme_classic(base_family = "serif", base_size = 14)+
+  geom_smooth(method = "lm", se = FALSE, col="purple")+
+  geom_text(aes(label=daysemployeed))
+```
+# Heights
+```{r}
+
+
+hw_la$End_Date <-  as.character(hw_la$End_Date)
+hw_la$End_Date <-  as.POSIXct(hw_la$End_Date, format = "%m/%d/%Y")
+hw_la$Start_Date <-  as.character(hw_la$Start_Date)
+hw_la$Start_Date <-  as.POSIXct(hw_la$Start_Date, format = "%m/%d/%Y")
+hw_la$Date <-  as.character(hw_la$Date)
+hw_la$Date <-  as.POSIXct(hw_la$Date, format = "%m/%d/%Y")
+
+hw_la$daysemployed <-  ifelse(hw_la$ObsID == "1", hw_la$daysemployed <- "1000", difftime(hw_la$End_Date, hw_la$Start_Date, units = "days"))
+
+hw_la <- hw_la %>%
+  filter(PastureID_YearOfSurvey %in% util_join$New_YearOfSurveyID & Year %in% util_join$Year)%>%
+  dplyr::select(-End_Date)
+
+hw_la$ObsID <- as.factor(hw_la$ObsID)
+hw_la$Year <- as.factor(hw_la$Year)
+hw_la$daysemployed <- as.numeric(hw_la$daysemployed)
+
+hw_la$site_move <- ifelse(as.character(hw_la$Site) == as.character(hw_la$Original_Site_Assignment), hw_la$site_move <- "No", hw_la$site_move <- "Yes")
+
+hw_la$site_move <- as.factor(hw_la$site_move)
+hw_la$seasons <- ifelse(hw_la$daysemployed<170, hw_la$seasons <- 1, ifelse(hw_la$daysemployed<340, hw_la$seasons <- 2, hw_la$seasons <- 3))
+
+colnames(hw_la)[5] <- "WtRemoved"
+colnames(hw_la)[11] <- "LA"
+
+# observer effects models
+hw_la_nona <-na.omit(hw_la)
+
+hw_mod <- lm(WtRemoved ~ Site + Year, data = hw_la)
+summary(hw_mod)
+
+hw_mod_upper <- lm(WtRemoved ~ Site + Year + ObsID + Position + site_move + Performance_Rating + daysemployed + Original_Site_Assignment+seasons+MostAbdPerGrass+CheatgrassCover+ShrubOverstory, data = hw_la)
+summary(hw_mod_upper)
+
+stepAIC(hw_mod, scope = list(upper = hw_mod_upper, lower = hw_mod), direction = "both")
+
+hw_best <- lm(formula = WtRemoved ~ Site + Year + ObsID + MostAbdPerGrass + 
+    site_move + ShrubOverstory + CheatgrassCover, data = hw_la)
+summary(hw_best)
+
+hw_moved <- subset(hw_la, site_move=="Yes")
+hw_stayed <- subset(hw_la, site_move = "No")
+
+t.test(hw_moved$WtRemoved, hw_stayed$WtRemoved)
+
+```
+# LA
+```{r}
+la_mod <- lm(LA ~ Site + Year, data = hw_la)
+summary(la_mod)
+
+la_mod_upper <- lm(LA ~ Site + Year + ObsID + Position + site_move + Performance_Rating + daysemployed + Original_Site_Assignment + seasons+MostAbdPerGrass+CheatgrassCover+ShrubOverstory, data = hw_la)
+summary(la_mod_upper)
+
+stepAIC(la_mod, scope = list(upper = la_mod_upper, lower = la_mod), direction = "both")
+
+la_best <- lm(formula = LA ~ Site + Year + ObsID + MostAbdPerGrass + ShrubOverstory +site_move + CheatgrassCover, data = hw_la)
+summary(la_best)
+
+
+la_best2 <-  lm(formula = LA ~ Site + Year + ObsID + site_move +Position, data = hw_la)
+summary(la_best2)
+anova(la_best,la_best2)
+
+# comapring to heights
+
+hw_la_mod <- lm(LA~WtRemoved, data = hw_la)
+summary(hw_la_mod)
+
+hw_la_mod_upper <- lm(LA ~ WtRemoved + Site + Year + ObsID + Position + site_move + Performance_Rating + daysemployed + Original_Site_Assignment + seasons, data = hw_la)
+summary(la_mod_upper)
+
+stepAIC(hw_la_mod, scope = list(upper = hw_la_mod_upper, lower = hw_la_mod), direction = "both")
+
+
+la_moved <- subset(hw_la, site_move=="Yes")
+la_stayed <- subset(hw_la, site_move = "No")
+
+t.test(la_moved$LA, la_stayed$LA)
+hw_la$LA[hw_la$LA == "88"] <- "90"
+
+ggplot(subset(hw_la,!is.na(LA)), aes(x=factor(LA, levels = c("2.5","13","30","50", "70", "90")), y=WtRemoved, col = factor(LA,levels = c("2.5","13","30","50", "70", "90"))))+
+  geom_boxplot()+
+  geom_point(alpha = 0.1)+
+  theme_classic(base_size = 16, base_family = "serif")+
+  coord_flip()+
+  theme(legend.position = "none")+
+  labs(x = "% Utilization (Landscaoe Appearance)", y = "% Utilization (Height-Weight)")
+
+ggsave("la_hw.png", device = "png", dpi = 1000)
+
+ggplot(hw_la, aes(x=as.factor(LA), y=Date, col = as.factor(LA)))+
+  geom_point()+
+  theme_classic(base_size = 16, base_family = "serif")+
+  coord_flip()+
+  theme(legend.position = "none")+
+  labs(x = "% Utilization (Landscape Appearance)", y = "Date")+
+  facet_wrap(.~Year)
+```
+
+# Excluding the MOOvers
+```{r}
+la_pasture2 <- hw_la %>%
+  filter(site_move == "No",
+         !is.na(WtRemoved))%>%
+  gather(c(5,11), key = "method", value = "util")%>%
+  group_by(Site, Year, PastureID_YearOfSurvey, method)%>%
+  summarise(Util = mean(util), n = n(), stdev = sd(util))%>%
+  mutate(StErr = stdev/sqrt(n),
+         lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
+         upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)
+
+plot_pasture2 <- util_join %>%
+  gather(c(7,36), key = "method", value = "util")%>%
+  filter(SiteMove== "No")%>%
+  group_by(Site, Year, New_YearOfSurveyID,method)%>%
+  summarise(Util = mean(util), n = n(), stdev = sd(util))%>%
+  mutate(StErr = stdev/sqrt(n),
+         lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
+         upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)
+
+colnames(plot_pasture2)[3] <-c("PastureID_YearOfSurvey")
+
+all_pasture_long <- rbind(la_pasture2, plot_pasture2)
+
+
+# add stocking rate
+
+all_pasture2 <-  all_pasture2 %>%
+  left_join(stocking_rate, by = c("Year", "New_YearOfSurveyID"))%>%
+  filter(AUMha != 0)
+
+cormat2 <- cor(all_pasture[,c(4:9)], use = "complete.obs")
+
+PerformanceAnalytics::chart.Correlation(all_pasture2[,c(4:9)], histogram=TRUE, pch=16)
+
+ggcor2 <- GGally::ggpairs(all_pasture2[,c(4:9)],lower = list(continuous = "smooth", combo = "dot_no_facet"))
+
+ggcor2 <- ggcor2 + theme_minimal()
+ggcor2
+ggsave("ggcor2.jpeg", dpi = 500, device = "jpeg", path = "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Data\\", width =10, height = 10)
+```
+
+
+# Excluding the stayers
+```{r}
+la_pasture3 <- hw_la %>%
+  filter(site_move == "Yes")%>%
+  group_by(Site, Year, PastureID_YearOfSurvey)%>%
+  summarise(LandscapeAppearance = mean(LA), n = n(), stdev_LA = sd(LA))%>%
+  mutate(StErr = stdev_LA/sqrt(n),
+         lower.ci = LandscapeAppearance - qt(1 - (0.1/2), n - 1) * StErr,
+         upper.ci = LandscapeAppearance + qt(1 - (0.1/2), n - 1) * StErr)
+
+hw_pasture3 <- hw_la %>%
+  filter(site_move == "Yes")%>%
+  group_by(Site, Year, PastureID_YearOfSurvey)%>%
+  filter(!is.na(WtRemoved))%>%
+  summarise(HeightWeight = mean(WtRemoved), n = n(), stdev_HW = sd(WtRemoved))%>%
+  mutate(StErr = stdev_HW/sqrt(n),
+         lower.ci = HeightWeight - qt(1 - (0.1/2), n - 1) * StErr,
+         upper.ci = HeightWeight + qt(1 - (0.1/2), n - 1) * StErr)
+
+hw_la_pasture3 <- full_join(hw_pasture3[,1:4],la_pasture3[,1:4], by = c("PastureID_YearOfSurvey","Site", "Year"))
+
+plot_pasture3 <- util_join %>%
+  filter(SiteMove== "Yes")%>%
+  group_by(Treatment,Site, Year, New_YearOfSurveyID)%>%
+  summarise(OC = mean(AvgRemoved), GF = mean(percent_grazed), n = n(), stdev_GF = sd(percent_grazed), stdev_OC = sd(AvgRemoved))
+
+pp_join2 <-  pp_join %>%
+  left_join(ocular[,c(1,10)],by = c("PAST_NAME"= "PastureName"))
+
+pp_pasture3 <- pp_join %>%
+  group_by(Site, Year,  New_YearOfSurveyID) %>%
+  summarise(PP = mean(Wtdiff), n = n(), stdev = sd(Wtdiff))%>%
+  mutate(StErr = stdev/sqrt(n),
+         lower.ci = PP - qt(1 - (0.1/2), n - 1) * StErr,
+         upper.ci = PP + qt(1 - (0.1/2), n - 1) * StErr)
+
+colnames(pp_pasture3)[4] <- "Util"
+pp_pasture3$method <-  "PairedPlots"
+
+all_pasture3 <- full_join(plot_pasture3[,2:6],hw_la_pasture3, by = c("Year", "New_YearOfSurveyID"="PastureID_YearOfSurvey", "Site"))
+
+all_pasture3 <- full_join(all_pasture3,pp_pasture3[,2:5], by = c("Year", "New_YearOfSurveyID", "Site"))
+
+colnames(all_pasture3)[c(4,5,8)] <-c("OcularEstimates", "GrazedFrequency", "PairedPlots")
+# add stocking rate
+
+all_pasture3 <-  all_pasture3 %>%
+  left_join(stocking_rate, by = c("Year", "New_YearOfSurveyID"))%>%
+  filter(AUMha != 0)
+
+cormat3 <- cor(all_pasture3[,c(4:9)], use = "complete.obs")
+
+PerformanceAnalytics::chart.Correlation(all_pasture3[,c(4:9)], histogram=TRUE, pch=16)
+
+ggcor3 <- GGally::ggpairs(all_pasture3[,c(4:9)],lower = list(continuous = "smooth", combo = "dot_no_facet"))
+
+ggcor3 <- ggcor3 + theme_minimal()
+ggcor3
+ggsave("ggcor3.jpeg", dpi = 500, device = "jpeg", path = "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Data\\", width =10, height = 10)
+```
+
+# Scaling to pasture
+
+```{r}
+la_pasture <- hw_la %>%
+  group_by(Site, Year, PAST_NAME)%>%
+  summarise(Util = mean(LA), n = n(), stdev = sd(LA))%>%
+  mutate(StErr = stdev/sqrt(n),
+         lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
+         upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)%>%
+  mutate(Method = "Landscape Appearance")
+
+hw_pasture <- hw_la %>%
+  group_by(Site, Year, PAST_NAME)%>%
+  filter(!is.na(WtRemoved))%>%
+  summarise(Util = mean(WtRemoved), n = n(), stdev = sd(WtRemoved))%>%
+  mutate(StErr = stdev/sqrt(n),
+         lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
+         upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)%>%
+  mutate(Method = "Height-Weight")
+
+hw_la_pasture <- rbind(hw_pasture,la_pasture)
+
+plot_pasture <- util_join %>%
+  gather(c(3,24), key = "Method", value = "Util1")%>%
+  group_by(Site, Year, Method, PAST_NAME)%>%
+  summarise(Util = mean(Util1), n = n(), stdev = sd(Util1))%>%
+  mutate(StErr = stdev/sqrt(n),
+         lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
+         upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)
+
+all_pasture <- rbind(hw_la_pasture, plot_pasture)
+
+all_pasture <- full_join(plot_pasture[,2:6],hw_la_pasture, by = c("Year", "New_YearOfSurveyID"="PastureID_YearOfSurvey", "Site"))
+
+all_pasture <- full_join(all_pasture,pp_pasture[,2:5], by = c("Year", "New_YearOfSurveyID", "Site"))
+
+colnames(all_pasture)[c(4,5,8)] <-c("OcularEstimates", "GrazedFrequency", "PairedPlots")
+# add stocking rate
+
+all_pasture <-  all_pasture %>%
+  left_join(stocking_rate, by = c("Year", "New_YearOfSurveyID"))%>%
+  filter(AUMha != 0)
+
+write.csv(all_pasture_long, "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Data\\all_pasture_plot_long.csv" )
+
+cormat <- cor(all_pasture[,c(4:9)], use = "complete.obs")
+
+PerformanceAnalytics::chart.Correlation(all_pasture[,c(4:9)], histogram=TRUE, pch=16)
+
+ggcor <- GGally::ggpairs(all_pasture[,c(4:9)],lower = list(continuous = "smooth", combo = "dot_no_facet"))
+
+ggcor <- ggcor + theme_minimal()
+ggcor
+ggsave("ggcor.jpeg", dpi = 500, device = "jpeg", path = "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Data\\", width =10, height = 10)
+
+```
+
+
+
+# ploting all utilization
+```{r}
+
+
+all_pasture_long <- all_pasture %>%
+  gather(4:9, key = "method", value = "utilization")
+
+all_pasture_summary <- all_pasture_long%>%
+  group_by(Site, method, Year) %>%
+  summarise(util = mean(utilization))
+
+all_pasture_long <- dplyr::distinct(all_pasture_long)
+all_pasture_long$Site[all_pasture_long$Site=="Pava"] <-  "PAVA"
+
+# wht were the tudy pasture sin 2018?
+all_pasture_plot <-  all_pasture_long %>%
+  filter(Year == "2018",
+         PastureID_YearOfSurvey == "825"| PastureID_YearOfSurvey == "22"|PastureID_YearOfSurvey == "12"|PastureID_YearOfSurvey == "15"| PastureID_YearOfSurvey == "786")
+
+colnames(pp_pasture3)[3] <- "PastureID_YearOfSurvey"
+
+all_pasture_plot <-  rbind(all_pasture_plot, pp_pasture3)
+
+ggplot(data = all_pasture_plot, aes(x=Site,y=Util,fill=method))+
+  geom_col(position = "dodge", alpha = 0.6)+
+  theme_classic(base_family = "serif", base_size = 16)+
+  scale_fill_brewer(type = "qual",
+                    labels = c("Ocular Estimate",
+                               "Landscape Appearance",
+                               "Paired Plots",
+                               "Grazed Plant Frequency",
+                               "Height-Weight"))+
+  labs(x = "Study Site", y = "Grazing Intensity Estimate (%)", fill = "Technique")+
+  geom_errorbar(aes(ymin=lower.ci, ymax=upper.ci), position = "dodge", alpha= 0.5)+
+  theme(legend.position = "bottom")+
+  labs(fill = "")
+  
+ggsave(device = "tiff", "all_pastiure.tif", dpi = 500, width = 10)
+
+```
+
