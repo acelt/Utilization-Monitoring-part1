@@ -84,7 +84,6 @@ library(RColorBrewer)
 nb.cols <- length(unique(stocking_rate_observed$PastureID))
 mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(nb.cols)
 
-
 # fix structure a little
 stocking_rate_observed$ID <- as.factor(stocking_rate_observed$ID)
 stocking_rate_observed$Year <- as.factor(stocking_rate_observed$Year)
@@ -92,8 +91,11 @@ stocking_rate_observed$Site <- as.factor(stocking_rate_observed$Site)
 stocking_rate_observed$PastureID <- as.factor(stocking_rate_observed$PastureID)
 
 # lets do a quick plot here to look at whats going on
-for(i in seq_along(levels(stocking_rate_observed$Site))){
-  ggplot(data = stocking_rate_observed[stocking_rate_observed$Site == i,], aes(fill = PastureID))+
+# size of rectangle is basically AUMs
+for(i in c("BIBU", "BRBE", "JISA", "PAVA", "SHCR")){
+  data <- stocking_rate_observed[stocking_rate_observed$Site == i & !is.na(stocking_rate_observed$DateIn),]
+  
+  ggplot(data = data, aes(fill = PastureID))+
     geom_rect(aes(xmin = DateIn, xmax = DateOut, ymin = 0, ymax = NumberOfAnimals))+
     facet_grid(PastureID~Year, scales = "free")+
     scale_x_date(date_labels = "%W-%m", date_breaks = "2 week")+
