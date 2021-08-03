@@ -97,8 +97,8 @@ for(i in c("BIBU", "BRBE", "JISA", "PAVA", "SHCR")){
   
   ggplot(data = data, aes(fill = PastureID))+
     geom_rect(aes(xmin = DateIn, xmax = DateOut, ymin = 0, ymax = NumberOfAnimals))+
-    facet_grid(PastureID~Year, scales = "free")+
-    scale_x_date(date_labels = "%W-%m", date_breaks = "2 week")+
+    facet_wrap(.~Year)+
+    scale_x_date(date_labels = "%d-%m", date_breaks = "2 week")+
     theme(axis.text.x  = element_text(angle = 60, hjust =1), legend.position = "")+
     scale_fill_manual(name = "Pasture ID", values = mycolors)+
     labs(y = "Number of Animals", x = "Day-Month")
@@ -106,15 +106,16 @@ for(i in c("BIBU", "BRBE", "JISA", "PAVA", "SHCR")){
   ggsave(filename = paste0("stocking rate data ",i, ".jpg"), dpi = 500, device = "jpg", path = wd, width = 20, height = 16, units = "in")
   
 }
+# these plots also give a visual of when the spring/fall grazing cut off was - there doesnt really seem to be any..
+
 
 # Summarising to pasture and year to sum individual grazing events
-# But we also want to capture spring vs fall grazing here so splitting up to spring AUms and total AUMs
-# the spring cut off date is June 15th
-stocking_rate_observed <-  stocking_rate_observed %>%
+# But we may also want to capture spring vs fall grazing here so splitting up to spring AUMs and total AUMs
+# the spring cut off date is June 15th asccording to teh G and G report
+
+stocking_rate_pasture <-  stocking_rate_observed %>%
   group_by(Year, PastureID, Site) %>%
   summarise(AUMs = sum(AUM))
-
-stocking_rate$Year <-  as.factor(stocking_rate$Year)
 
 ### Ocular Estimates
 # joining to stocking rate data and filtering based on grazing events
