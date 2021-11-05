@@ -394,47 +394,49 @@ ggsave("ggcor3.jpeg", dpi = 500, device = "jpeg", path = "C:\\Users\\Alexander\\
 # Scaling to pasture
 
 ```{r}
-la_pasture <- hw_la %>%
-  group_by(Site, Year, PAST_NAME)%>%
-  summarise(Util = mean(LA), n = n(), stdev = sd(LA))%>%
-  mutate(StErr = stdev/sqrt(n),
-         lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
-         upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)%>%
-  mutate(Method = "Landscape Appearance")
-
-hw_pasture <- hw_la %>%
-  group_by(Site, Year, PAST_NAME)%>%
-  filter(!is.na(WtRemoved))%>%
-  summarise(Util = mean(WtRemoved), n = n(), stdev = sd(WtRemoved))%>%
-  mutate(StErr = stdev/sqrt(n),
-         lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
-         upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)%>%
-  mutate(Method = "Height-Weight")
-
-hw_la_pasture <- rbind(hw_pasture,la_pasture)
-
-plot_pasture <- util_join %>%
-  gather(c(3,24), key = "Method", value = "Util1")%>%
-  group_by(Site, Year, Method, PAST_NAME)%>%
-  summarise(Util = mean(Util1), n = n(), stdev = sd(Util1))%>%
-  mutate(StErr = stdev/sqrt(n),
-         lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
-         upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)
-
-all_pasture <- rbind(hw_la_pasture, plot_pasture)
-
-all_pasture <- full_join(plot_pasture[,2:6],hw_la_pasture, by = c("Year", "New_YearOfSurveyID"="PastureID_YearOfSurvey", "Site"))
-
-all_pasture <- full_join(all_pasture,pp_pasture[,2:5], by = c("Year", "New_YearOfSurveyID", "Site"))
-
-colnames(all_pasture)[c(4,5,8)] <-c("OcularEstimates", "GrazedFrequency", "PairedPlots")
-# add stocking rate
-
-all_pasture <-  all_pasture %>%
-  left_join(stocking_rate, by = c("Year", "New_YearOfSurveyID"))%>%
-  filter(AUMha != 0)
-
-write.csv(all_pasture_long, "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Data\\all_pasture_plot_long.csv" )
+# read in pasture level data here
+# 
+# la_pasture <- hw_la %>%
+#   group_by(Site, Year, PAST_NAME)%>%
+#   summarise(Util = mean(LA), n = n(), stdev = sd(LA))%>%
+#   mutate(StErr = stdev/sqrt(n),
+#          lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
+#          upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)%>%
+#   mutate(Method = "Landscape Appearance")
+# 
+# hw_pasture <- hw_la %>%
+#   group_by(Site, Year, PAST_NAME)%>%
+#   filter(!is.na(WtRemoved))%>%
+#   summarise(Util = mean(WtRemoved), n = n(), stdev = sd(WtRemoved))%>%
+#   mutate(StErr = stdev/sqrt(n),
+#          lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
+#          upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)%>%
+#   mutate(Method = "Height-Weight")
+# 
+# hw_la_pasture <- rbind(hw_pasture,la_pasture)
+# 
+# plot_pasture <- util_join %>%
+#   gather(c(3,24), key = "Method", value = "Util1")%>%
+#   group_by(Site, Year, Method, PAST_NAME)%>%
+#   summarise(Util = mean(Util1), n = n(), stdev = sd(Util1))%>%
+#   mutate(StErr = stdev/sqrt(n),
+#          lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
+#          upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)
+# 
+# all_pasture <- rbind(hw_la_pasture, plot_pasture)
+# 
+# all_pasture <- full_join(plot_pasture[,2:6],hw_la_pasture, by = c("Year", "New_YearOfSurveyID"="PastureID_YearOfSurvey", "Site"))
+# 
+# all_pasture <- full_join(all_pasture,pp_pasture[,2:5], by = c("Year", "New_YearOfSurveyID", "Site"))
+# 
+# colnames(all_pasture)[c(4,5,8)] <-c("OcularEstimates", "GrazedFrequency", "PairedPlots")
+# # add stocking rate
+# 
+# all_pasture <-  all_pasture %>%
+#   left_join(stocking_rate, by = c("Year", "New_YearOfSurveyID"))%>%
+#   filter(AUMha != 0)
+# 
+# write.csv(all_pasture_long, "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Data\\all_pasture_plot_long.csv")
 
 cormat <- cor(all_pasture[,c(4:9)], use = "complete.obs")
 

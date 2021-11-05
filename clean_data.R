@@ -139,7 +139,6 @@ stocking_rate_pasture <- merge(x = stocking_rate_pasture,
                                all.x = TRUE,
                                all.y = FALSE)
 
-
 # specify treatment type based on treatment start year
 stocking_rate_pasture$Treatment[stocking_rate_pasture$Treatment != "Non-Treatment" & as.numeric(as.character(stocking_rate_pasture$Year)) < stocking_rate_pasture$YearStudyStart] <- "Pre-Treatment"
      
@@ -226,12 +225,12 @@ ocular_freq_pasture_grazed <- filter(ocular_freq_pasture, AUMs > 0)
 write.csv(x = ocular_freq_pasture_grazed, file = paste0(wd, "final_ocular_freq_pasture.csv"))
 
 ### Height weight / landscape appearance
+## export csv of all plot data for hw and la
 hw_la$SiteMove <- ifelse(as.character(hw_la$Site) == as.character(hw_la$Original_Site_Assignment), hw_la$SiteMove <- "No",hw_la$SiteMove <-  "Yes")
 
 # convert all charcter variables to factors for the modelling
 hw_la[sapply(hw_la, is.character)] <- lapply(hw_la[sapply(hw_la, is.character)], 
                                                as.factor)
-
 # same with pasture ids and year
 hw_la$Year <- as.factor(hw_la$Year)
 hw_la$SiteMove <- factor(hw_la$SiteMove, levels=c("Yes","No"))
@@ -239,3 +238,44 @@ hw_la$PastureID_YearOfSurvey <- as.factor(hw_la$PastureID_YearOfSurvey)
 
 # Summarise to pasture 
 
+la_pasture <- hw_la %>%
+  group_by(Site, Year, PAST_NAME)%>%
+  summarise(Util = mean(LA), n = n(), stdev = sd(LA))%>%
+  mutate(StErr = stdev/sqrt(n),
+         lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
+         upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)%>%
+  mutate(Method = "Landscape Appearance")
+
+hw_pasture <- hw_la %>%
+  group_by(Site, Year, PAST_NAME)%>%
+  filter(!is.na(WtRemoved))%>%
+  summarise(Util = mean(WtRemoved), n = n(), stdev = sd(WtRemoved))%>%
+  mutate(StErr = stdev/sqrt(n),
+         lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
+         upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr) %>%
+  mutate(Method = "Height-Weight")
+
+hw_la_pasture <- rbind(hw_pasture,la_pasture)
+
+plot_pasture <- util_join %>%
+  gather(c(3,24), key = "Method", value = "Util1")%>%
+  group_by(Site, Year, Method, PAST_NAME)%>%
+  summarise(Util = mean(Util1), n = n(), stdev = sd(Util1))%>%
+  mutate(StErr = stdev/sqrt(n),
+         lower.ci = Util - qt(1 - (0.1/2), n - 1) * StErr,
+         upper.ci = Util + qt(1 - (0.1/2), n - 1) * StErr)
+
+all_pasture <- rbind(hw_la_pasture, plot_pasture)
+
+all_pasture <- full_join(plot_pasture[,2:6],hw_la_pasture, by = c("Year", "New_YearOfSurveyID"="PastureID_YearOfSurvey", "Site"))
+
+all_pasture <- full_join(all_pasture,pp_pasture[,2:5], by = c("Year", "New_YearOfSurveyID", "Site"))
+
+colnames(all_pasture)[c(4,5,8)] <-c("OcularEstimates", "GrazedFrequency", "PairedPlots")
+# add stocking rate
+
+all_pasture <-  all_pasture %>%
+  left_join(stocking_rate, by = c("Year", "New_YearOfSurveyID"))%>%
+  filter(AUMha != 0)
+
+write.csv(all_pasture_long, "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Data\\all_pasture_plot_long.csv")
