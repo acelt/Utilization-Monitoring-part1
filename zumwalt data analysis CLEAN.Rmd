@@ -1,0 +1,1666 @@
+---
+title: "Zumwalt Data Analysis"
+output: html_notebook
+---
+
+
+```{r setup, eval=FALSE}
+library(readxl)
+library(tidyverse)
+library(dplyr)
+library(magrittr)
+library(MASS)
+library(sp)
+library(raster)
+library(quantreg)
+library(leaps)
+library(boot)
+library(rgdal)
+library(sp)
+library(amt)
+library(geosphere)
+library(raster)
+library(lubridate)
+library(NbClust)
+library(factoextra)
+```
+
+```{r}
+folder <- "C:\\Users\\Alexander\\OneDrive - University of Idaho\\Email attachments\\CIG Biomass 2019\\Zumwalt\\Data\\"
+clipdata <- unpack_clip("C:\\Users\\Alexander\\OneDrive - University of Idaho\\Email attachments\\CIG Biomass 2019\\Zumwalt\\Data\\Clipped Plots") # remove empty clip tabs
+lpidata <- unpack_lpi(folder)
+hwdata <- unpack_hw(folder)
+ladata <- unpack_la(folder)
+trmt <- read_xlsx("C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data Analysis\\plot_treatments.xlsx")%>%
+  separate(col = PASTURE,into = c("Block", "Paddock"),sep = 1,remove = FALSE)
+trmt$Date_last_grazed <- as.Date(as.numeric(trmt$Date_last_grazed), origin = "1899-12-30")
+# fix treatments levels here two
+```
+
+# LPI
+```{r}
+
+# grazed cover
+grazing_summary_PLOT <- lpidata %>%
+  group_by(PlotID, Observer)%>%
+  dplyr::summarise(count = n(),
+            Percent_Grazed = (summary(Grazing)[1]/count)*100)
+
+# LPI cover calculations
+lpi_tall <- lpidata %>%
+  gather(8:13, key = Layer, value = Code)
+
+# Number of points for all plots in 150 here
+lpi_tall$point_count <- 150
+
+order(unique(as.factor(lpi_tall$Code)))
+
+# Look up functional groups
+func_groups <- read_xlsx("C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data Analysis\\func_groups.xlsx")
+
+lpi_tall <- left_join(lpi_tall, func_groups, by = c("Code"="USDA_code"))
+lpi_tall$func <- ifelse(lpi_tall$Layer == "Top_Canopy" & is.na(lpi_tall$func) | lpi_tall$Layer == "Top_Canopy" & lpi_tall$func == "n/a",
+                        "Bare",
+                        lpi_tall$func)
+
+# Drop data where there is no code value (i.e. layers where there was no recorded hit)
+lpi_tall <- dplyr::filter(.data = lpi_tall,
+                          !is.na(func),
+                          func != "",
+                          func != "None",
+                          func != "n/a",
+                          func != "N/A",
+                          func != "N/a"
+                          )
+# summarising cover
+# need to QA QC correct codes first
+# summaries by functional group:
+
+lpi_summary <- lpi_tall %>%
+  dplyr::group_by(PlotID, Transect, Point, point_count, func,Observer,Date) %>%
+  dplyr::summarize(present = if(any(!is.na(func) & func != "n/a")){1} else {0}) %>%
+  dplyr::ungroup() %>% 
+  dplyr::group_by(PlotID,Observer,func,Date) %>%
+                          # Within a plot, find the sum of all the "presents" then divide by the number of possible hits, which
+                          # we added in point.count
+  dplyr::summarize(percent = round(100*sum(present, na.rm = TRUE)/first(point_count),1)) %>%
+                          ## Remove the empty groupings—that is the ones where all the indicator variable values were NA
+  dplyr::filter(!grepl(func, pattern = "^[NA.]{0,100}NA$"))%>%
+  tidyr::spread(key = func, value = percent, fill = 0)
+
+# add NAs to site 31 where no lpi was collected
+lpi_summary[26,4:15] <- NA
+# percent bare soil
+
+# percent foliar cover
+# = 100 - bare
+lpi_summary$foliar_cover <- 100-lpi_summary$Bare
+
+lpi_all <- left_join(lpi_summary, grazing_summary_PLOT[,c(1,4)], by = "PlotID") %>%
+  mutate(prop_pg_grazed = (Percent_Grazed/PG) *100)
+
+colnames(lpi_all)[[2]] <- "Observer_LPI"
+```
+
+# HW
+```{r}
+# calculate avergae ungrazed heights per control paddock
+# join trmt data
+hwdata <- hwdata[,-c(1,3,6)] %>%
+  left_join(trmt, by = c("PlotID"="sample"))
+
+hwdata <- hwdata %>%
+  filter(!is.na(Species),
+         Species != "n/a",
+         Species == "FEID"|
+           Species == "PSSP6"|
+           Species == "POSE"|
+           Species == "KOMA")
+
+hwdata$Culm <- as.character(hwdata$Culm)
+hwdata$Culm <-   ifelse(hwdata$Culm == "no",
+                      "No",
+                      hwdata$Culm)
+
+hwdata$Culm <- as.factor(hwdata$Culm)
+
+# Using average ungrazed plants from control paddocks split out by block, speices and growth form
+ungraz_avg_plot1 <- hwdata %>%
+  dplyr::select(-Grazed)%>%
+  filter(!is.na(Ungraz))%>%
+  group_by(PlotID, Species, PASTURE,Block, Culm, GrazeType)%>%
+  dplyr::summarise(plot_ungraz = mean(Ungraz), plot_n= n())%>%
+  dplyr::select(-plot_n)%>%
+  spread(key=Species,value=plot_ungraz)%>%
+  gather(key = "Species", value = "plot_ungraz", 6:9)%>%
+  spread(key=Culm,value=plot_ungraz)%>%
+  gather(key = "Culm", value = "plot_ungraz", 6:7)%>%
+  dplyr::ungroup()
+
+ungraz_avg_plot2 <- hwdata %>%
+  dplyr::select(-Grazed)%>%
+  filter(!is.na(Ungraz))%>%
+  group_by(PlotID, Species, PASTURE,Block, Culm, GrazeType)%>%
+  dplyr::summarise(plot_ungraz = mean(Ungraz), plot_n= n())
+
+ungraz_avg_PASTURE <- hwdata %>%
+  dplyr::select(-Grazed)%>%
+  filter(!is.na(Ungraz))%>%
+  group_by(Species, PASTURE,Block, Culm, GrazeType)%>%
+  dplyr::summarise(pasture_ungraz = mean(Ungraz), pasture_n= n())
+
+ungraz_avg_Block <- hwdata %>%
+  dplyr::select(-Grazed)%>%
+  filter(!is.na(Ungraz))%>%
+  group_by(Species, Block, Culm)%>%
+  dplyr::summarise(block_ungraz = mean(Ungraz), block_n= n())
+
+ungraz_avg_trmt <- hwdata %>%
+  dplyr::select(-Grazed)%>%
+  filter(!is.na(Ungraz))%>%
+  group_by(Species, GrazeType, Culm)%>%
+  dplyr::summarise(trmt_ungraz = mean(Ungraz), trmt_n= n())
+
+ungraz_avg_all <- hwdata %>%
+  dplyr::select(-Grazed)%>%
+  filter(!is.na(Ungraz))%>%
+  group_by(Species, Culm)%>%
+  dplyr::summarise(all_ungraz = mean(Ungraz), all_n= n())
+
+ungrazed_join <- ungraz_avg_plot1 %>%
+  left_join(ungraz_avg_plot2[,-7], by = c("PlotID", "Species", "PASTURE","Block", "Culm", "GrazeType"))%>%
+  left_join(ungraz_avg_PASTURE, by = c("PASTURE","Species","Culm", "GrazeType","Block"))%>%
+  left_join(ungraz_avg_Block, by = c("Species","Culm","Block")) %>%
+  left_join(ungraz_avg_trmt, by = c("Species", "GrazeType", "Culm")) %>%
+  left_join(ungraz_avg_all, by = c("Species", "Culm"))
+
+ungrazed_join[is.na(ungrazed_join)] <- 0
+ungrazed_join$proper_ungraz <- ifelse(ungrazed_join$plot_n>20,
+                                      ungrazed_join$plot_ungraz,
+                                      ifelse(ungrazed_join$pasture_n>20,
+                                             ungrazed_join$pasture_ungraz,
+                                             ifelse(ungrazed_join$block_n>20,
+                                                    ungrazed_join$block_ungraz,
+                                                    ifelse(ungrazed_join$trmt_n>20,
+                                                           ungrazed_join$trmt_ungraz,
+                                                           ifelse(ungrazed_join$all_n>20,
+                                                                  ungrazed_join$all_ungraz,
+                                                                  NA)))))
+# need at least 20 ungrazed plants
+# no KOMA in block D
+# need to remove PSSP6 with culm, KOMA with culm and all POSE
+ungrazed_join_culm <- ungrazed_join %>%
+  filter(Culm == "Yes")
+
+write.csv(ungrazed_join, "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\ungrazed_heights.csv")
+
+hw_removed <- hwdata %>%
+  left_join(ungrazed_join[,c(1,5,6,17)], by = c("PlotID","Species","Culm")) %>%
+  mutate(Ht_Removed = (proper_ungraz-Grazed)/proper_ungraz*100)%>% # remove nas
+  dplyr::select(-c(Removed,Util))
+
+mice::md.pattern(hw_removed[,c(6,7,17:20)])
+hw_removed_nacheck <-  hw_removed %>%
+  filter(is.na(Grazed)&is.na(Ht_Removed))
+    
+hw_removed$Ht_Removed[is.na(hw_removed$Ht_Removed)] <- 0
+length(hw_removed$Ht_Removed[hw_removed$Ht_Removed<0])
+length(hw_removed$Ht_Removed[hw_removed$Ht_Removed>0])
+# 264 negative values for % height removed out of 1187 ~18% of grazed plants - maybe need to deduct all grazed plants from averaged culmed height - this is reducd to 5% when using just culmed average
+
+# convert 277 negative values to 0 
+hw_removed$Ht_Removed <- ifelse(hw_removed$Ht_Removed<0,
+                                0,
+                                hw_removed$Ht_Removed)
+
+# calculating utilization from height weight curves
+# need to run height-weigh curve script first
+
+# Import height weight curves
+
+```
+
+```{r}
+pose1 <- read_xlsx("C:\\Users\\Alexander\\OneDrive - University of Idaho\\Email attachments\\CIG Biomass 2019\\Zumwalt\\Height Weight Data\\HEIGHT WEIGHT CURVES 2.xlsx", sheet = 1)
+
+pssp1 <- read_xlsx("C:\\Users\\Alexander\\OneDrive - University of Idaho\\Email attachments\\CIG Biomass 2019\\Zumwalt\\Height Weight Data\\HEIGHT WEIGHT CURVES 2.xlsx", sheet = 2)
+
+feid1 <- read_xlsx("C:\\Users\\Alexander\\OneDrive - University of Idaho\\Email attachments\\CIG Biomass 2019\\Zumwalt\\Height Weight Data\\HEIGHT WEIGHT CURVES 2.xlsx", sheet = 3)
+
+pssp2 <-  read_xlsx("C:\\Users\\Alexander\\OneDrive - University of Idaho\\Email attachments\\CIG Biomass 2019\\Zumwalt\\Height Weight Data\\HEIGHT WEIGHT CURVES 2.xlsx", sheet = 5)
+
+koma1 <- read_xlsx("C:\\Users\\Alexander\\OneDrive - University of Idaho\\Email attachments\\CIG Biomass 2019\\Zumwalt\\Height Weight Data\\HEIGHT WEIGHT CURVES 2.xlsx", sheet = 6)
+
+feid2 <- read_xlsx("C:\\Users\\Alexander\\OneDrive - University of Idaho\\Email attachments\\CIG Biomass 2019\\Zumwalt\\Height Weight Data\\HEIGHT WEIGHT CURVES 2.xlsx", sheet = 7)
+```
+
+00# Modelling the height weight curves
+# FEID 1
+```{r}
+feid1 <- feid1[c(1:148),c(1:11)] %>%
+  filter(per_wt_removed!=0)
+
+attach(feid1)
+
+feid1_mod <- lm(log(per_wt_removed)~per_ht_removed, data = feid1)
+
+summary(feid1_mod)
+# y = e^-0.225245 . e^(0.047430x)
+
+values <- seq(0,100,1)
+
+line1 <- exp(predict(feid1_mod,list(per_ht_removed=values)))
+
+plot(per_ht_removed,per_wt_removed, xlab = "Percent Height Removed", ylab = "Percent Weight Removed", main = "Festuca idahoensis Height-Weight Curve (Block A)")
+lines(values, line1, col = "red")
+```
+# POSE
+```{r}
+attach(pose1)
+
+pose_mod <- lm(log(per_wt_removed)~per_ht_removed, data = pose1)
+
+summary(pose_mod)
+# y = e^-0.225245 . e^(0.047430x)
+
+values <- seq(0,100,1)
+
+line1 <- exp(predict(pose_mod,list(per_ht_removed=values)))
+
+plot(per_ht_removed,per_wt_removed, xlab = "Percent Height Removed", ylab = "Percent Weight Removed", main = "Poa secunda Height-Weight Curve (Block A)")
+lines(values, line1, col = "red")
+```
+OOOO0# PSSP6
+```{r}
+attach(pssp1)
+
+pssp1 <- pssp1 %>%
+  filter(per_wt_removed!=0)
+
+pssp1_mod <- lm(log(per_wt_removed)~per_ht_removed, data = pssp1)
+
+summary(pssp1_mod)
+# y = e^-0.225245 . e^(0.047430x)
+
+values <- seq(0,100,1)
+
+line1 <- exp(predict(pssp1_mod,list(per_ht_removed=values)))
+
+plot(per_ht_removed,per_wt_removed, xlab = "Percent Height Removed", ylab = "Percent Weight Removed", main = "Pseudoroegneria spicata Height-Weight Curve (Block A)")
+lines(values, line1, col = "red")
+```
+# FEID 2
+
+```{r}
+attach(feid2)
+
+pssp1 <- pssp1 %>%
+  filter(per_wt_removed!=0)
+
+feid2_mod <- lm(log(per_wt_removed)~per_ht_removed, data = feid2)
+
+summary(feid2_mod)
+# y = e^-0.225245 . e^(0.047430x)
+
+values <- seq(0,100,1)
+
+line1 <- exp(predict(feid2_mod,list(per_ht_removed=values)))
+
+plot(per_ht_removed,per_wt_removed, xlab = "Percent Height Removed", ylab = "Percent Weight Removed", main = "Festuca idahoensis Height-Weight Curve (Block D)")
+lines(values, line1, col = "red")
+```
+# pssp 2 culm
+```{r}
+pssp2_culm <- pssp2 %>%
+  filter(culm == "YES")
+
+pssp2_noculm <- pssp2 %>%
+  filter(culm == "NO")
+
+attach(pssp2_culm)
+
+pssp2culm_mod <- lm(log(per_wt_removed)~per_ht_removed, data = pssp2_culm)
+
+summary(pssp2culm_mod)
+
+values <- seq(0,100,1)
+
+line1 <- exp(predict(pssp2culm_mod,list(per_ht_removed=values)))
+
+plot(per_ht_removed,per_wt_removed, xlab = "Percent Height Removed", ylab = "Percent Weight Removed", main = "Psuedoroegneria spicata with culm
+     Height-Weight Curve (Block D)")
+lines(values, line1, col = "red")
+```
+# PSSP 2 no culm
+```{r}
+pssp2_culm <- pssp2 %>%
+  filter(culm == "YES")
+
+pssp2_noculm <- pssp2 %>%
+  filter(culm == "NO")
+
+attach(pssp2_noculm)
+
+#pssp2noculm_mod <- lm(log(per_wt_removed)~per_ht_removed, data = pssp2_noculm)
+
+#summary(pssp2noculm_mod)
+# linear model is better here
+pssp2noculm_mod <- lm(per_wt_removed~per_ht_removed, data = pssp2_noculm)
+
+values <- seq(0,100,1)
+
+line1 <- predict(pssp2noculm_mod,list(per_ht_removed=values))
+
+plot(per_ht_removed,per_wt_removed, xlab = "Percent Height Removed", ylab = "Percent Weight Removed", main = "Psuedoroegneria spicata without culm
+     Height-Weight Curve (Block D)")
+lines(values, line1, col = "red")
+```
+
+#KOMA
+
+```{r}
+attach(koma1)
+
+koma_mod <- lm(log(per_wt_removed)~per_ht_removed, data = koma1)
+
+summary(koma_mod)
+
+values <- seq(0,100,1)
+
+line1 <- exp(predict(koma_mod,list(per_ht_removed=values)))
+
+plot(per_ht_removed,per_wt_removed, xlab = "Percent Height Removed", ylab = "Percent Weight Removed", main = "Koeleria macrantha
+     Height-Weight Curve (Block D)")
+lines(values, line1, col = "red")
+```
+
+```{r}
+hw_removed$Utilization <-
+                               as.numeric(ifelse(hw_removed$Ht_Removed == 0 |hw_removed$Ht_Removed < 0, 0,                                 ifelse(hw_removed$Species == "FEID" & hw_removed$Block == "A" | hw_removed$Species == "FEID" & hw_removed$Block == "B",
+     exp(predict(feid1_mod, list(per_ht_removed = hw_removed$Ht_Removed))),                                                        ifelse(hw_removed$Species == "FEID" & hw_removed$Block == "C" | hw_removed$Species == "FEID" & hw_removed$Block == "D",
+                                      exp(predict(feid2_mod,list(per_ht_removed = hw_removed$Ht_Removed))),
+                                     ifelse(hw_removed$Species == "PSSP6" & hw_removed$Culm == "no" | hw_removed$Species == "PSSP6" & hw_removed$Culm == "No",
+                                             predict(pssp2noculm_mod,list(per_ht_removed =hw_removed$Ht_Removed)),
+                                            ifelse(hw_removed$Species == "PSSP6" & hw_removed$Culm == "Yes" & hw_removed$Block == "A" |hw_removed$Species == "PSSP6" & hw_removed$Culm == "Yes" & hw_removed$Block == "B",
+                                                   exp(predict(pssp1_mod,list(per_ht_removed =hw_removed$Ht_Removed))),
+                                                   ifelse(hw_removed$Species == "KOMA",
+                                                          hw_removed$Utilization <- exp(predict(koma_mod,list(per_ht_removed =hw_removed$Ht_Removed))),
+                                                              ifelse(hw_removed$Species == "PSSP6" & hw_removed$Culm == "Yes" & hw_removed$Block == "C" | hw_removed$Species == "PSSP6" & hw_removed$Culm == "Yes" & hw_removed$Block == "D", exp(predict(pssp2culm_mod,list(per_ht_removed =hw_removed$Ht_Removed))), 
+                                                                     ifelse(hw_removed$Species == "POSE",
+                                                                            exp(predict(pose_mod ,list(per_ht_removed =hw_removed$Ht_Removed))),                                                   NA)))))))))
+by(data = hw_removed[,c(20,21)], INDICES = hw_removed$GrazeType, FUN = colMeans, na.rm = TRUE) #- more height loss at higher treatment but less utilization - function of species/curves?
+hw_removed$Utilization[hw_removed$Utilization<0] <-  0
+
+
+hw_removed$PlotID <- as.factor(hw_removed$PlotID)
+hw_removed$PASTURE <- as.factor(hw_removed$PASTURE)
+hw_removed$Block <- as.factor(hw_removed$Block)
+hw_removed$Paddock <- as.factor(hw_removed$Paddock)
+hw_removed$GrazeType <- as.factor(hw_removed$GrazeType)
+hw_removed$Utilization <- as.numeric(hw_removed$Utilization)
+
+# need a count of hw observations per plot 
+point.totals <- hw_removed %>%
+    dplyr::group_by(PlotID,Transect) %>%
+    dplyr::summarize(point.count = length(unique(as.character(Point))))%>%
+  group_by(PlotID)%>%
+  summarise(point.count = sum(point.count))
+
+# Add the point.counts field (it'll be the same for every record associated with a plot)
+hw_removed <- merge(x = hw_removed,
+                    y = point.totals,
+                    all.x = TRUE)
+
+hw_summary_plot <- hw_removed %>%
+  group_by(PlotID, Observer,Date, Block, PASTURE, GrazeType, Calib_type, point.count)%>%
+  summarise(Avg_Util = mean(Utilization), Avg_Ht_removed = mean(Ht_Removed))
+# what if we filter the very high treatment
+hw_summary_plot_filter <- hw_summary_plot %>%
+  filter(PASTURE != "C2"&PASTURE !="C1")
+
+data <- hw_summary_plot_filter
+
+hw_mod <- lm(Avg_Util ~ GrazeType+Block, data = data)
+anova(hw_mod)
+TukeyHSD(aov(hw_mod))
+
+levels(hw_summary_plot$GrazeType)
+
+hw_summary_plot$GrazeType <- factor(hw_summary_plot$GrazeType, levels(hw_summary_plot$GrazeType)[c(1,3,4,2)])
+
+colnames(hw_summary_plot)[[2]]<- "Observer_HW"
+```
+
+# PAIRED PLOTS
+```{r}
+dryweights <- read_xlsx("C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\Dry Weights.xlsx", sheet = 1)
+
+# Remove extras for now and spread
+
+clip_plot_summary <- dryweights[,-c(6:8)] %>%
+  filter(Subplot != "EXTRA",
+         Species != "AF",
+         Species != "PF",
+         Species != "AG")%>%
+  spread(key = Subplot, value = DryBiomass)
+
+clip_plot_summary[is.na(clip_plot_summary)] <- 0
+
+clip_plot_summary <- clip_plot_summary %>%
+  mutate(Utilization = (CAGED - UNCAGED) / CAGED *100)
+
+clip_plot_summary[clip_plot_summary<0] <- 0
+clip_plot_summary$Utilization[clip_plot_summary$Utilization=="NaN"] <- 0
+clip_plot_summary$Utilization[clip_plot_summary$Utilization==100] <- NA
+
+clip_plot_summary <- clip_plot_summary %>%
+  group_by(Plot, Date, Block)%>%
+  dplyr::summarise(Mean_util = mean(Utilization, na.rm=TRUE))
+
+# summarising to treatment level
+#clip_summary_site <- clip_plot_summary %>%
+ # group_by(GrazeType)%>%
+#  dplyr::summarise(Mean_Util = mean(Utilization),
+ #                            sd = sd(Utilization),
+ #                            n = n(),
+    #        variance = var(Utilization)) %>%
+ # mutate(se = sd/sqrt(n),
+   #      lower_ci = Mean_Util - qt(1-(alpha/2), n-1)*se,
+   #      upper_ci = Mean_Util + qt(1-(alpha/2), n-1)*se)
+
+#colnames(clip_summary_site)<- c("GrazeType","Utilization","sd","n","variance","se","Lower_ci", "Upper_ci")
+
+#clip_summary_site$Method <- "Paired-plot"
+```
+
+# LANDSCAPE APPEARANCE
+```{r}
+# need to fill in correct calibrtion and treatment and replace LIGHT with Light
+ladata$Class <- as.factor(gsub("LIGHT", "Light", ladata$Class))
+ladata$Class <- as.factor(gsub("MODERATE", "Moderate", ladata$Class))
+
+ladata$Calibration <- as.factor(gsub("2. Paired-plot", "2.Paired-plot", ladata$Calibration))
+
+ladata$Calibration <- as.factor(gsub("2.Paired-plot", "Paired-plot", ladata$Calibration))
+
+# join to trmt and check
+
+ladata_trmt <- left_join(ladata[,-c(3,6)],trmt, by = c("PlotID"="sample"))
+
+ladata_trmt$Calibration[is.na(ladata_trmt$Calibration)] <- "3.Height"
+
+# reorder class & treatment
+print(levels(ladata_trmt$Class))
+ladata_trmt$Class <- factor(ladata_trmt$Class,levels(ladata_trmt$Class)[c(4,6,2,3,1,5)])
+
+ladata_trmt$GrazeType <- as.factor(ladata_trmt$GrazeType)
+print(levels(ladata_trmt$GrazeType))
+ladata_trmt$GrazeType <- factor(ladata_trmt$GrazeType, levels(ladata_trmt$GrazeType)[c(1,3,4,2)])
+
+# Are these differences significant?
+# chi squared test/friedmans
+
+la_test <- ladata_trmt[,c(2,3,12)]
+
+class_table <- data.frame(Class = unique(ladata_trmt$Class),
+                          Midpoint = c(2.5,13,30.5,50.5,70.5,87.5))
+
+ladata_trmt <- left_join(ladata_trmt, class_table, by = "Class")
+# should I summarise class to the plot level? modal class? midpoint average?
+
+# midpoint average by plot
+ladata_plot <- ladata_trmt %>%
+  group_by(PlotID, Block, GrazeType, Observer, Date, PASTURE, Calibration)%>%
+  dplyr::summarise(mean_midpoint = mean(Midpoint))
+
+colnames(ladata_plot)[[4]] <- "Observer_LA"
+
+ladata_site <- ladata_plot %>%
+  group_by(GrazeType)%>%
+  dplyr::summarise(mean_la = mean(mean_midpoint),
+                              sd_la = sd(mean_midpoint),
+                             n_la = n()) %>%
+  mutate(se_la = sd_la/sqrt(n_la),
+         Lower_ci_la = mean_la - qt(1 - (0.1 / 2), n_la - 1) * se_la,
+         Upper_ci_la = mean_la + qt(1 - (0.1 / 2), n_la - 1) * se_la)
+              
+# we have 2 control and 2 mediums in A block and only 2 visual calibs in C and many paired plot
+
+la_mod1 <- aov(lm(mean_midpoint ~ GrazeType + Block, data = ladata_plot))
+summary(la_mod1)
+
+TukeyHSD(la_mod1)
+
+la_cont <- ladata_trmt[,c(2,12)]
+la_cont <- table(la_cont$Class, la_cont$GrazeType)
+
+chisq.test(la_cont)
+fisher.test(la_cont,simulate.p.value=TRUE)
+
+# now individual tests
+la_cont1 <- la_cont[,c(1:2)]
+la_cont1
+chisq.test(la_cont1)
+fisher.test(la_cont1)
+
+la_cont2 <- la_cont[,c(1,3)]
+la_cont2
+chisq.test(la_cont2)
+fisher.test(la_cont2)
+
+la_cont3 <- la_cont[,c(1,4)]
+la_cont3
+chisq.test(la_cont3)
+fisher.test(la_cont3)
+
+la_cont4 <- la_cont[,c(2,3)]
+la_cont4
+chisq.test(la_cont4)
+fisher.test(la_cont4)
+
+la_cont5 <- la_cont[,c(2,4)]
+la_cont5
+chisq.test(la_cont5)
+fisher.test(la_cont5, simulate.p.value=TRUE)
+
+la_cont6 <- la_cont[,c(3,4)]
+la_cont6
+chisq.test(la_cont6)
+fisher.test(la_cont6)
+```
+
+# MERGE ALL and summarise
+```{r}
+
+all_plot <- ladata_plot %>%
+  left_join(hw_summary_plot, by = "PlotID")%>%
+  left_join(lpi_all, by = "PlotID")%>%
+  left_join(clip_plot_summary, by = c("PlotID"="Plot"))
+
+all_plot <- all_plot[,-c(2,3,5,6,10,11,12,13,14,35,36,15)] %>%
+  left_join(trmt, by = c("PlotID"="sample"))
+
+all_plot$days_since_graz <- difftime(all_plot$Date.x.x,all_plot$Date_last_grazed)
+
+all_plot$PlotID <-  as.factor(all_plot$PlotID)
+all_plot$stratum <-  as.factor(all_plot$stratum)
+all_plot$PASTURE <-  as.factor(all_plot$PASTURE)
+all_plot$Block <-  as.factor(all_plot$Block)
+all_plot$Paddock <-  as.factor(all_plot$Paddock)
+all_plot$GrazeType <-  as.factor(all_plot$GrazeType)
+all_plot$CagePlot <-  as.factor(all_plot$CagePlot)
+all_plot$Calib_type <-  as.factor(all_plot$Calib_type)
+
+colnames(all_plot)[[9]] <-  "Date"
+
+# ESRI doesnt like class difftime
+all_plot$days_since_graz <-  as.numeric(all_plot$days_since_graz)
+```
+
+# anova and multiple comparisons for LPI and PP
+```{r}
+all_plot_filter <-all_plot %>%
+  filter(PASTURE != "C2"&PASTURE !="C1")
+
+data <-  all_plot_filter
+ks_mod <- lm(`Percent Key Species Grazed (LPI)` ~ GrazeType + Block, data = data)
+anova(ks_mod)
+TukeyHSD(aov(ks_mod))
+
+gc_mod <- lm( `Percent Grazed Cover (LPI)` ~ GrazeType + Block, data = data)
+anova(gc_mod)
+TukeyHSD(aov(gc_mod))
+
+t.test(subset(all_plot, GrazeType=="High")$`Percent Grazed Cover (LPI)`,subset(all_plot, GrazeType=="Low")$`Percent Grazed Cover (LPI)`)
+
+pp_mod <- lm( `Weight Removed (Paired Plots)` ~ GrazeType + Block, data = data)
+anova(pp_mod)
+TukeyHSD(aov(pp_mod))
+```
+
+# Adding lat longs
+```{r}
+# Fixed lat longs
+latlong_corrected  <- read.csv("C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data Analysis\\latlong_corrected.csv")
+
+latlong_corrected$lat <- as.double(latlong_corrected$lat)
+latlong_corrected$long <- as.double(latlong_corrected$long)
+
+colnames(latlong_corrected)[[1]]<- "PlotID"
+
+# join lat lons
+all_plot_shp <- all_plot %>%
+  left_join(latlong_corrected, by = "PlotID")
+
+all_plot_shp <- SpatialPointsDataFrame(all_plot_shp[,c(37,36)],
+                                           all_plot_shp)
+
+crs(all_plot_shp) <- "+init=epsg:4326 +proj=longlat +datum=WGS84 +units=m"
+
+all_plot_shp <- spTransform(all_plot_shp, CRS(" +proj=utm +zone=11 +datum=WGS84 +units=m +no_defs +ellps=WGS84"))
+                            
+#writeOGR(all_plot_shp,dsn = "GIS", "all_plot_91319", driver="ESRI Shapefile")
+```
+
+# Import raster joins and Multivariate analysis
+```{r}
+# rename columns:
+colnames(all_plot)[[4]]<- "Landscape Appearance Midpoint"
+colnames(all_plot)[[6]]<- "Weight Removed (Heights)"
+colnames(all_plot)[[23]]<- "Percent Grazed Cover (LPI)"
+colnames(all_plot)[[24]]<- "Percent Key Species Grazed (LPI)"
+colnames(all_plot)[[25]]<- "Weight Removed (Paired Plots)"
+
+all_plot$GrazeType <- as.factor(all_plot$GrazeType)
+
+all_plot$GrazeType <- factor(all_plot$GrazeType, levels(all_plot$GrazeType)[c(1,3,4,2)]) # 
+
+raster_values_wide <- read.csv("C:\\Users\\alaurencetraynor\\Documents\\2019\\UI\\Zumwalt\\all_plot_raster.csv")
+# ESRI has fill in 0 instead of NA
+# need r squared values
+
+raster_values <- raster_values_wide[,c(1,30,38:41)] %>%
+  right_join(all_plot, by = "PlotID")%>%
+  gather(key="method", value = "grazing_intensity",c(9,11,28:30))
+
+# remove old treatmts
+raster_values <- raster_values[,-30]
+colnames(raster_values)[[2]] <- "GrazeType"
+
+#reorder so the order is: “Control”, “Low”, “Medium” “High”
+raster_values$GrazeType <- as.factor(raster_values$GrazeType)
+raster_values$GrazeType <- factor(raster_values$GrazeType, levels(raster_values$GrazeType)[c(1,3,4,2)])
+
+# adding moving window stuff
+filter_2by2 <-  read.csv("C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data Analysis\\tempdir\\filter_2by2.csv")[,c(2,6)]
+basic_2by2 <-  read.csv("C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data Analysis\\tempdir\\basic_2by2.csv")[,c(2,6)]
+
+raster_values <- raster_values %>%
+  left_join(filter_2by2, by = c("PlotID"="PLOTID"))%>%
+  left_join(basic_2by2, by = c("PlotID"="PLOTID"))
+ # switch between filter and basic
+
+ggplot(data= raster_values_wide, aes(y = grazing_intensity, x = Basic_rast, col = method))+
+  geom_point(alpha = 0.5)+
+  facet_wrap(~method,scales = "free", nrow = 2)+
+  theme_bw(base_size = 14, base_family = "serif")+
+  geom_smooth(method = "lm", se=FALSE)+
+  theme(legend.position = "none",
+        strip.background = element_rect(fill = "#6D9EC1"), 
+        panel.background = element_rect(fill = "#F0F8FF"),
+        panel.spacing.x = unit(units="in",0.1),
+        plot.margin = unit(units = "in", c(0.2,0.2,0.2,0.2)))+
+  labs(y = "Field-based Grazing Intensity", x = "Cattle GPS Location Intensity")+
+  scale_color_brewer(type = "qual", palette = 6)+
+  geom_quantile(quantiles = c(0.1,0.5,0.9), linetype =2)
+
+ggsave("rastervsplot.jpeg",dpi = 2000, device = "jpeg", width = 14, height = 8)
+
+la_sibset <- subset(raster_values, method =="Landscape Appearance Midpoint")
+
+summary(lm(data = subset(raster_values, method =="Landscape Appearance Midpoint"), grazing_intensity ~ filter_2by2))
+summary(lm(data = subset(raster_values, method =="Weight Removed (Heights)"), grazing_intensity ~ filter_2by2))
+summary(lm(data = subset(raster_values, method =="Percent Grazed Cover (LPI)"), grazing_intensity ~ filter_2by2))
+summary(lm(data = subset(raster_values, method =="Percent Key Species Grazed (LPI)"), grazing_intensity ~ filter_2by2))
+summary(lm(data = subset(raster_values, method =="Weight Removed (Paired Plots)"), grazing_intensity ~ filter_2by2))
+
+# is there a threshold here?
+# quantile regression may be useful here
+library(quantreg)
+ks_rqfit <- rq(data = subset(raster_values, method =="Percent Key Species Grazed (LPI)"), grazing_intensity ~ filter_2by2, tau = c(0.1, 0.5, 0.9))
+summary(ks_rqfit,se = "nid")
+
+la_rqfit <- rq(data = subset(raster_values, method =="Landscape Appearance Midpoint" ), grazing_intensity ~ filter_2by2, tau = c(0.1, 0.5, 0.9))
+summary(la_rqfit,se = "nid")
+
+hw_rqfit <- rq(data = subset(raster_values, method =="Weight Removed (Heights)"), grazing_intensity ~ filter_2by2, tau = c(0.1, 0.5, 0.9))
+summary(hw_rqfit,se = "nid")
+
+gc_rqfit <- rq(data = subset(raster_values, method == "Percent Grazed Cover (LPI)" ), grazing_intensity ~ filter_2by2, tau = c(0.1, 0.5, 0.9))
+summary(gc_rqfit,se = "nid")
+
+pp_rqfit <- rq(data = table4, Mean_tl ~ filter_2by2, tau = c(0.1, 0.5, 0.9))
+summary(pp_rqfit, se = "boot")
+
+library(RColorBrewer)
+my.cols <- brewer.pal(name = "Spectral", n =3)
+my.cols[3] <- "#6BAED6"
+my.cols[2] <- "#99D594"
+
+raster_treatments$name <- gsub("Avg_Utl","Height weight",raster_treatments$name)
+raster_treatments$name <- gsub("Mean_tl","Paired plots",raster_treatments$name)
+raster_treatments$name <- gsub("mn_mdpn","Landscape Appearance",raster_treatments$name)
+
+install.packages("extrafont")
+library("extrafont")
+font_import()
+
+y
+ggplot(data= subset(raster_treatments, name != "Prcnt_G" & name != "prp_pg_"), aes(y = value, x = Basic_rast, col = name))+
+  geom_point(shape =21, fill = "black")+
+  facet_wrap(~name, scales = "free", nrow = 3)+
+  theme_minimal(base_size = 12, base_family = "serif")+
+  geom_smooth(method = "lm", se=FALSE)+
+  theme(legend.position = "none")+
+  labs(y = "Utilization (%)", x = "Cattle GPS Location Intensity",
+       col = "")+
+  coord_cartesian()+
+  scale_color_manual(values = my.cols)+
+  geom_quantile(quantiles = c(0.1,0.5,0.9), linetype =2)+
+  guides(col=guide_legend(nrow=1,byrow=TRUE))
+
+ggsave("accuracy.tif", device = "tiff", dpi = 1000, width = 2.5, height =5)
+```
+
+
+# exploring blocks
+```{r}
+ggplot(all_plot,aes(x = GrazeType, y = `Landscape Appearance Midpoint`, fill = GrazeType))+
+  geom_boxplot(inherit.aes = TRUE, alpha = 0.5)+
+   geom_point(alpha=0.4)+
+  facet_wrap(.~Block, nrow =1)+
+  theme_minimal(base_size = 14)+
+  theme(legend.position = "none", axis.text.x = element_text(angle = 60, vjust = 0.6))
+
+ggplot(all_plot,aes(x = GrazeType, y = `Weight Removed (Heights)`, fill = GrazeType))+
+  geom_boxplot(inherit.aes = TRUE, alpha = 0.5)+
+   geom_point(alpha=0.4)+
+  facet_wrap(.~Block, nrow =1)+
+  theme_minimal(base_size = 14)+
+  theme(legend.position = "none", axis.text.x = element_text(angle = 60, vjust = .6))
+
+ggplot(all_plot,aes(y=`Percent Grazed Cover (LPI)`,x = GrazeType, fill = GrazeType))+
+  geom_boxplot(inherit.aes = TRUE, alpha = 0.5)+
+   geom_point(alpha=0.4)+
+  facet_wrap(.~Block, nrow =1)+
+  theme_minimal(base_size = 14)+
+  theme(legend.position = "none", axis.text.x = element_text(angle = 60, vjust = 0.6))
+
+ggplot(all_plot,aes(x = GrazeType, y = `Percent Key Species Grazed (LPI)`, fill = GrazeType))+
+  geom_boxplot( alpha = 0.5)+
+   geom_point(alpha=0.4)+
+  facet_wrap(.~Block, nrow =1)+
+  theme_minimal(base_size = 14)+
+  theme(legend.position = "none", axis.text.x = element_text(angle = 60, vjust = 0.6))
+
+ggplot(all_plot,aes(x = GrazeType, y = `Weight Removed (Paired Plots)`, fill = GrazeType))+
+  geom_boxplot( alpha = 0.5)+
+   geom_point(alpha=0.4)+
+  facet_wrap(.~Block, nrow =1)+
+  theme_minimal(base_size = 14)+
+  theme(legend.position = "none", axis.text.x = element_text(angle = 60, vjust = 0.6))
+
+# quantile regression
+```
+# PCA
+```{r}
+pca_data <-  raster_values_shp@data
+
+pca1 <-  prcomp(pca_data[,c(4,6,7,10:25,33,35,38,39)], center = TRUE, scale. = TRUE)
+summary(pca1)
+pca1$rotation
+
+ggbiplot::ggbiplot(pca1, groups = pca_data$GrazTyp, ellipse = TRUE)
+ggbiplot::ggbiplot(pca1, groups = pca_data$Obsr_LA, ellipse = TRUE)
+ggbiplot::ggbiplot(pca1, groups = pca_data$Obsr_HW, ellipse = TRUE)
+ggbiplot::ggbiplot(pca1, groups = pca_data$Obs_LPI, ellipse = TRUE)
+ggbiplot::ggbiplot(pca1, groups = pca_data$Block, ellipse = TRUE)
+ggbiplot::ggbiplot(pca1, groups = pca_data$Clb_typ, ellipse = TRUE)
+ggbiplot::ggbiplot(pca1,choices = 3:4 )
+ggbiplot::ggbiplot(pca1,choices = 5:6 )
+```
+# calibration
+```{r}
+  
+cor <- cor(pca_data[,c(4,6,7,23:25,38,39)], method = "spearman")
+
+cor_c1 <- cor(subset(pca_data, Calbrtn=="1.Visual")[,c(4,6,7,23:25,38,39)], method = "spearman")
+cor_c3 <- cor(subset(pca_data,Calbrtn=="3.Height")[,c(4,6,7,23:25,38,39)], method = "spearman")
+cor_c2 <- cor(subset(pca_data, Calbrtn=="Paired-plot")[,c(4,6,7,23:25,38,39)], method = "spearman")
+cor_c4 <- cor(subset(pca_data, Calbrtn=="4.None")[,c(4,6,7,23:25,38,39)], method = "spearman")
+
+cal1 <- cor_c1[c(2,4,5,6,7,8),1]
+cal2 <- cor_c2[c(2,4,5,6,7,8),1]
+cal3 <- cor_c3[c(2,4,5,6,7,8),1]
+cal4 <- cor_c4[c(2,4,5,6,7,8),1]
+
+cor.table <-  rbind(cal1,cal2,cal3,cal4)
+# correlation betwen landscape appearance and:
+# critical z values = 1.28 (alpha = 0.2) / 1.645 (alpha = 0.1)
+# height weight:
+z1 <- DescTools::FisherZ(cor_c1)[1,2]
+
+z2 <- DescTools::FisherZ(cor_c2)[1,2]
+
+z3 <- DescTools::FisherZ(cor_c3)[1,2]
+
+z4 <- DescTools::FisherZ(cor_c4)[1,2]
+
+zobserved <-  function(z1,z2,n1,n2){
+  zobserved = (z1 - z2) / sqrt((1 / (n1 - 3)) + (1 / (n2 - 3)))
+  print(zobserved)
+}
+
+n1 <- 14
+n2 <- 16
+n3 <- 18
+n4 <- 18
+
+zobserved(z1,z2,n1,n2)
+zobserved(z1,z3,n1,n3)
+zobserved(z1,z4,n1,n4)
+
+zobserved(z2,z3,n2,n3)
+zobserved(z2,z4,n2,n4)
+
+zobserved(z3,z4,n3,n4)
+
+DescTools::CorCI(cor_c1[1,2], n1, conf.level = 0.90, alternative = "two.sided")
+DescTools::CorCI(cor_c2[1,2], n2, conf.level = 0.90, alternative = "two.sided")
+DescTools::CorCI(cor_c3[1,2], n3, conf.level = 0.90, alternative = "two.sided")
+DescTools::CorCI(cor_c4[1,2], n4, conf.level = 0.90, alternative = "two.sided")
+
+# percent grazed
+z1 <- DescTools::FisherZ(cor_c1)[1,4]
+
+z2 <- DescTools::FisherZ(cor_c2)[1,4]
+
+z3 <- DescTools::FisherZ(cor_c3)[1,4]
+
+z4 <- DescTools::FisherZ(cor_c4)[1,4]
+
+zobserved(z1,z2,n1,n2)
+zobserved(z1,z3,n1,n3)
+zobserved(z1,z4,n1,n4)
+
+zobserved(z2,z3,n2,n3)
+zobserved(z2,z4,n2,n4)
+
+zobserved(z3,z4,n3,n4)
+
+DescTools::CorCI(cor_c1[1,4], n1, conf.level = 0.80, alternative = "two.sided")
+DescTools::CorCI(cor_c2[1,4], n2, conf.level = 0.80, alternative = "two.sided")
+DescTools::CorCI(cor_c3[1,4], n3, conf.level = 0.80, alternative = "two.sided")
+DescTools::CorCI(cor_c4[1,4], n4, conf.level = 0.80, alternative = "two.sided")
+
+
+# proportion of key species
+z1 <- DescTools::FisherZ(cor_c1)[1,5]
+
+z2 <- DescTools::FisherZ(cor_c2)[1,5]
+
+z3 <- DescTools::FisherZ(cor_c3)[1,5]
+
+z4 <- DescTools::FisherZ(cor_c4)[1,5]
+
+zobserved(z1,z2,n1,n2)
+zobserved(z1,z3,n1,n3)
+zobserved(z1,z4,n1,n4)
+
+zobserved(z2,z3,n2,n3)
+zobserved(z2,z4,n2,n4)
+
+zobserved(z3,z4,n3,n4)
+
+# paired plots
+z1 <- DescTools::FisherZ(cor_c1)[1,6]
+
+z2 <- DescTools::FisherZ(cor_c2)[1,6]
+
+z3 <- DescTools::FisherZ(cor_c3)[1,6]
+
+z4 <- DescTools::FisherZ(cor_c4)[1,6]
+
+zobserved(z1,z2,n1,n2)
+zobserved(z1,z3,n1,n3)
+zobserved(z1,z4,n1,n4)
+
+zobserved(z2,z3,n2,n3)
+zobserved(z2,z4,n2,n4)
+
+zobserved(z3,z4,n3,n4)
+
+# basic raster
+z1 <- DescTools::FisherZ(cor_c1)[1,8]
+
+z2 <- DescTools::FisherZ(cor_c2)[1,8]
+
+z3 <- DescTools::FisherZ(cor_c3)[1,8]
+
+z4 <- DescTools::FisherZ(cor_c4)[1,8]
+
+zobserved(z1,z2,n1,n2)
+zobserved(z1,z3,n1,n3)
+zobserved(z1,z4,n1,n4)
+
+zobserved(z2,z3,n2,n3)
+zobserved(z2,z4,n2,n4)
+
+zobserved(z3,z4,n3,n4)
+```
+
+# variance decomposition
+Liertarture:
+Bocard et al 1992.
+Heinze et al 2017
+-predictive vs explanatory vs descrfiptive models
+-any variable selection applied in a linear predictor model with correlated covariatess will always change the interpretation of effects
+-sample size/no varibales = eventsz per variable EPV (greater than 10/15?) - but also depends on effect size and correlation structure
+-Stepwise selection - unaccounted multiple testing will generally lead to underestimated p-values. Second, p-values for coefficient tests from a model do not test whether a variable is relevant per se, but rather whether it is relevant given the particular set of
+adjustment variables in that specific model
+-bst subset regression compares 2^k models using AIC
+- delta AIC >2 is significant
+- The Bayesian information criterion (BIC) was developed for situations where one assumes existence of a true model that is in the scope of all models that are considered in model selection. 
+-Consequently, for any suitable sample size the penalty factor of BIC is larger than that of AIC and BIC will select smaller models - probably better for models with large sample sizes
+- LASSO penalisation for when k>n
+- From our experience, use of the AIC, which corresponds to 𝛼𝐵 ≈ 0.157, but no smaller 𝛼𝐵 is recommendable if less than 25 EPV are available (we habe n = 66 so truefor any models with >3 variables)
+- Backwards elimination prefered over forward selection
+-  Bootstrap resampling with replacement or subsampling without replacement are valuable tools to investigate and quantify model stability (robustness of model to small perturbations in data) of selected models
+-  The basic idea is to draw 𝐵 resamplesfrom the original data set and to repeat variable selection in each of the resamples. Important types of quantities that this approach can provide are (i) bootstrap inclusion frequencies to quantify how likely an IV is selected, (ii) sampling distributions of regression coefficients, (iii) model selection frequencies to quantify how likely a particular set of IVs is selected, and (iv) pairwise inclusion frequencies, evaluating whether pairs of (correlated) IVs are competing for selection.
+- To derive a predictor that incorporates model uncertainty, Augustin, Sauerbrei, and Schumacher (2005) and Buchholz, Holländer, and Sauerbrei (2008), proposed a two-stage bootstrap procedure. In the first step, IVs are screened based on their inclusion
+frequencies, and IVs with negligible effects eliminated. In the second step, bootstrap model averaging is used to obtain an aggregated model. The regression coefficients are simply averaged over the bootstrap resamples. Variances for the regression coefficients can be obtained by making use of Buckland, Burnham, and Augustin (1997)’s variance formula taking into account both within-model variance and model selection uncertainty. This approach has two control parameters, the significance level in the variable selection procedure and the minimum bootstrap inclusion frequency required to include an IV in the second step.
+Pairwise inclusion frequencies can be easily compared against their expected values given independent selection of the pair of IVs. Values below the expectation would give rise for assuming selection competition between the two IVs, while values above
+the expectation indicate joint selection of a “rope team” of IVs; an IV's effect is then amplified by adjustment for a particular other IV.
+- Do not perform variable selection on IVs with known strong effects.
+- stability investigation reccomended when EPV <25
+1. Choose varibales based on biological meaning - remove redunant ones  = global model
+2. Decide whether and/or how to perfom varibale selection. Keep 'strong' variables out of selection process
+3. Perfrom stability/sensitivity analysis - inclusion freqencies and For assessing variance, we propose to compute the root mean squared difference (RMSD) of the bootstrap estimates of a
+regression coefficient and its corresponding (assumed unbiased) value in the global model estimated on the original data. The “RMSD ratio,” that is RMSD divided by the standard error of that coefficient in the global model, intuitively expresses the variance inflation or deflation caused by variable selection.
+- 'rms' package for bootstrap stability
+- 'glmulti' for best subset
+-  Relative conditional bias quantifies how much variable-selection-induced bias
+one would have to expect if an IV is selected
+
+Question = How are different estimates of utilization related? What causes differences in these relationship?
+
+1. variables which are important to explaining variation 
+- plot level variables 
+-- cover indicators, i.e. plant community
+-- average heights of grasses
+
+- observer variables
+-- Who the observer is and 
+-- who they are working with (interaction)
+-- experience
+-- how recently they calibrated?
+
+- grazing factors
+-- grazing intensity - is there a threshold? - should include continuous measure (GPS intensity) and prescribed management action (treatment level)
+-- spatial variability - from GPS collars? - categorise rasters then calc some patch stats e.g. patch size and shape
+-- grazing timing - pre post peak greeness - less compensation later in the growing seaosn (Block)/experience
+
+- environmental factors
+-- time of year/season - either by block or date (basicaaly the same as experience)
+
+2. want to perfrom best subset bootstrapping with LASSO/AIC
+
+# finalising reg data
+```{r}
+library(leaps)
+
+reg_data <- raster_values_shp@data[,c(1,38,39)] %>%
+  right_join(all_plot, by = "PlotID")
+
+# gather all variables:
+# need average ungrazedeights per  plot added
+ungraz_avg <- hwdata %>%
+  dplyr::select(-Grazed)%>%
+  filter(!is.na(Ungraz))%>%
+  group_by(PlotID)%>%
+  dplyr::summarise(plot_ungraz = mean(Ungraz))
+
+reg_data <- reg_data   %>%
+  left_join(ungraz_avg, by = "PlotID")
+
+# adding user experience
+reg_data$Experience <- as.numeric(difftime(reg_data$Date,as.Date("2019-07-01"),units = "days"))
+reg_data$hitch <- ifelse(reg_data$Experience < 14, "1",
+                         ifelse(reg_data$Experience < 29, "2",
+                                "3"))
+# only inlcude the best raster: filtered
+
+reg_data <- reg_data[,-3]
+
+# read in spatial variation dataset:
+gps_std <- read.csv("C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data Analysis\\tempdir\\spatial_variation.csv")
+
+reg_data <-  reg_data %>%
+  left_join(gps_std[,c(2,9,10)], by = "PlotID")
+colnames(reg_data)[[40]] <-  "MeanGPScount"
+colnames(reg_data)[[41]] <-  "StdGPScount"
+
+
+# calculating the best number 0f vsriables from stepAIC
+#drop site 31 with missing values
+
+reg_data <- reg_data[-26,]
+reg_data$days_since_graz[is.na(reg_data$days_since_graz)] <- 1820
+
+# drop everything not used in model
+reg_data <- reg_data[,-c(1,10,13,15,21,22,27,28,30,32,33,35,40)]
+# reorder to put dependant variables in front
+reg_data <- reg_data[c(4,6,18,19,20,1:3,5,7:17,21:28)]
+
+reg_data <- reg_data[,-c(10,23)]
+
+write.csv(reg_data, "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\reg_data.csv")
+```
+
+
+
+
+# bt subsets
+```{r}/
+
+regsubsets.out <- leaps::regsubsets(`Landscape Appearance Midpoint` ~ daytime_2b + Observer_LA + Calibration +Observer_HW +  Observer_LPI + AF +  AG + Cattle_Feces + Litter + Moss+ PF +PG + Rock  + foliar_cover + GrazeType + days_since_graz + plot_ungraz + Experience + as.factor(hitch)+ StdGPScount + Block, data = reg_data,
+                      nbest = 1,       # 1 best model for each number of predictors
+               nvmax = NULL,    # NULL for no limit on number of variables
+               force.in = NULL, force.out = NULL,
+               method = "exhaustive")
+
+summary.out <- summary(regsubsets.out)   
+fit_all_sum <- summary(regsubsets.out)   
+plot(regsubsets.out, scale = "adjr2", main = "Adjusted R^2")
+# plot a table of models showing variables in each model.
+# models are ordered by the selection statistic.
+
+library(car)
+layout(matrix(1:2, ncol = 2))
+## Adjusted R2
+res.legend <-
+    subsets(regsubsets.out, statistic="adjr2", legend = FALSE, min.size = 5, main = "Adjusted R^2")
+## Mallow Cp
+res.legend <-
+    subsets(regsubsets.out, statistic="cp", legend = FALSE, min.size = 5, main = "Mallow Cp")
+abline(a = 1, b = 1, lty = 2)
+
+
+which.min(summary.out$bic)
+which.min(summary.out$cp)
+
+summary.out$bic[16]
+
+subset(summary.out$which[8,],summary.out$which[8,] ==TRUE)
+
+summary.out$bic
+# spatial variation #1
+par(mfrow = c(2, 2))
+plot(fit_all_sum$rss, xlab = "Number of Variables", ylab = "RSS", type = "b")
+
+plot(fit_all_sum$adjr2, xlab = "Number of Variables", ylab = "Adjusted RSq", type = "b")
+best_adj_r2 = which.max(fit_all_sum$adjr2)
+points(best_adj_r2, fit_all_sum$adjr2[best_adj_r2],
+       col = "red",cex = 2, pch = 20)
+
+plot(fit_all_sum$cp, xlab = "Number of Variables", ylab = "Cp", type = 'b')
+best_cp = which.min(fit_all_sum$cp)
+points(best_cp, fit_all_sum$cp[best_cp], 
+       col = "red", cex = 2, pch = 20)
+
+plot(fit_all_sum$bic, xlab = "Number of Variables", ylab = "BIC", type = 'b')
+best_bic = which.min(fit_all_sum$bic)
+points(best_bic, fit_all_sum$bic[best_bic], 
+       col = "red", cex = 2, pch = 20)
+```
+
+```{r}
+
+best_subset <- function(dataset, y,rule=c("BIC","cp"),k){
+  regsubsets.out <- leaps::regsubsets(y ~ daytime_2b + Observer_LA + Calibration +Observer_HW +  Observer_LPI + AF +  AG + Cattle_Feces + Litter + Moss+ PF +PG + Rock  + foliar_cover + GrazeType + days_since_graz + plot_ungraz + Experience + as.factor(hitch)+ StdGPScount + Block,
+                      data = dataset,
+                      nbest = 1,       # 1 best model for each number of predictors
+               nvmax = k,    # NULL for no limit on number of variables
+               force.in = NULL, force.out = NULL,
+               method = "exhaustive")
+  summary.out <- summary(regsubsets.out) 
+  if(rule=="BIC"){
+    best_k <- which.min(summary.out$bic)
+  } else{ 
+    best_k <- which.min(summary.out$cp)
+  }
+  best_var <-  subset(summary.out$which[best_k,],summary.out$which[best_k,] ==TRUE)
+
+  bic <- paste("bic=", summary.out$bic[best_k])
+  cp <- paste("cp=",summary.out$cp[best_k])
+  adjr2 <- paste("adjr2=",summary.out$adjr2[best_k])
+  return(c(best_var,bic,cp,adjr2))
+  
+}
+```
+
+# should use AICc
+
+#refor mat data to only contain the followng:
+
+la_step_mod <-  lm(`Landscape Appearance Midpoint` ~ daytime_2b + Observer_LA + Calibration +Observer_HW +  Observer_LPI + AF +  AG + Cattle_Feces + Litter + Moss+ PF +PG + Rock  + foliar_cover + GrazeType + days_since_graz + plot_ungraz + Experience + as.factor(hitch)+ StdGPScount + Block, data = reg_data)
+
+la_step_mod_best <- stepAIC(la_step_mod, direction = "both")
+la_step_mod_best$terms[[3]]
+
+best_subset(dataset = reg_data, y = reg_data$`Landscape Appearance Midpoint`, rule = "cp", k = 16)
+
+boot::boot(data = reg_data, statistic = best_subset, R=2, k=16,rule="cp",y =reg_data$`Landscape Appearance Midpoint`)
+
+# Vincents code
+```{r}
+reg_data <-  read.csv("C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\reg_data.csv")[,-c(1,23,26)]
+## Data needs to be arrange SiteID, y variable, X variables
+# remove hitch and days grazed due to mlticollinearirty
+
+# recode factor levels 
+reg_data$Calibration <-  factor(reg_data$Calibration, levels = levels(reg_data$Calibration)[c(3,1,2,4)])
+levels(reg_data$Calibration)
+
+reg_data_dummy <- dummies::dummy.data.frame(data=reg_data,names= c("Observer_LA","Observer_LPI","Observer_HW","Calibration","Block","GrazeType"))
+
+reg_data_numeric <- reg_data[,-c(7:10,20,21)]
+cormat <- cor(reg_data_numeric)
+```
+# Function for extract model data
+```{r}
+
+model_summary <- function(data, yindex, index_remove){
+  
+  # Corrected AIC
+  aicc <-  function(x, n, k){
+  aic <- AIC(x)
+  aicc <- aic + (2*k*(k+1))/(n−k−1)
+  print(aicc)
+  }
+  # fit three models: full, stepwise and best subset
+  # 
+  all_vars <- data[,-c(index_remove)]
+  pred_vars <- all_vars[,-1]
+  full_mod <- lm(all_vars[,1] ~ .,data = pred_vars)
+  # Get covariate estomtes, aic and vif
+  extract_coef <- function(mod){
+  mod_coef <- as.data.frame(summary(mod)$coefficients)[,c(1,4)]
+  mod_aic <- aicc(mod, n = nrow(mod$model),k=ncol(mod$model)-1)
+  mod_adjr <- summary(mod)$adj.r.squared
+  mod_vif <- car::vif(mod)
+  mod_p <- 1- pf(summary(mod)[["fstatistic"]][["value"]], summary(mod)[["fstatistic"]][["numdf"]],summary(mod)[["fstatistic"]][["dendf"]])
+  mod_coef$adjr <- mod_adjr
+  mod_coef$p <- mod_p
+  mod_coef$aic <- mod_aic
+  mod_coef <- t(mod_coef)
+  return(list(mod_coef, mod_vif))
+  }
+  full_coef <- extract_coef(full_mod)
+  # stepwise mdoel
+  # need minimum model first
+  min_mod <- lm(all_vars[,1] ~ 1, data = pred_vars)
+  step_mod <- stepAIC(min_mod, scope = list(lower=min_mod,upper = full_mod), direction = "both")
+  step_coef <- extract_coef(step_mod)
+  
+  # best subsets model
+  best_mod <-  leaps::regsubsets(all_vars[,yindex] ~ ., method="exhaustive", nvmax = ncol(step_mod$model)-1, nbest = 1, data = pred_vars, really.big = TRUE)
+  best_mod_sum <- summary(best_mod)
+  best_k <- which.min(best_mod_sum$cp)
+  best_coef <- coef(best_mod_sum[["obj"]], best_k)
+  return(list(full_coef,step_coef,best_coef,step_mod))
+}
+
+```
+
+Stepwsie selection to see how many covariates should be used
+```{r}
+output_la <- model_summary(reg_data,1,c(2,3,4,5))
+write.csv(output_la[[1]][[1]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_la.csv")
+write.csv(output_la[[2]][[1]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_la_step.csv")
+write.csv(output_la[[3]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_la_best.csv")
+
+output_hw <- model_summary(reg_data,2,c(1,3,4,5))
+write.csv(output_hw[[1]][[1]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_hw.csv")
+write.csv(output_hw[[2]][[1]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_hw_step.csv")
+write.csv(output_hw[[3]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_hw_best.csv")
+
+output_pg <- model_summary(reg_data,3,c(2,1,4,5))
+write.csv(output_pg[[1]][[1]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_pg.csv")
+write.csv(output_pg[[2]][[1]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_pg_step.csv")
+write.csv(output_pg[[3]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_pg_best.csv")
+
+output_ks <- model_summary(reg_data,4,c(2,3,1,5))
+write.csv(output_ks[[1]][[1]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_ks.csv")
+write.csv(output_ks[[2]][[1]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_ks_step.csv")
+write.csv(output_ks[[3]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_ks_best.csv")
+
+output_pp <- model_summary(reg_data,5,c(2,3,4,1))
+write.csv(output_pp[[1]][[1]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_pp.csv")
+write.csv(output_pp[[2]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_pp_step.csv")
+write.csv(output_pp[[3]],"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\output_pp_best.csv")
+```
+
+# hard coding of bst subset models based on bootstrap results
+LA - best vars 
+```{r}
+best_la <- lm(reg_data[,1] ~., data = reg_data[,c(7,21,20,19,6,10,24)])
+best_la_coef <- summary(best_la)$coefficients[,c(1,4)]
+write.csv(best_la_coef,"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\best_la_coef.csv")
+aicc(best_la, n = nrow(best_la$model),k=ncol(best_la$model)-1)
+# using dummy vriables
+best_la_dum <- lm(reg_data[,1] ~., data = reg_data_dummy[,c(8,14,42,44,38,36,6,26,47,29)])
+summary(best_la_dum)
+
+# now the same for pg
+```
+GrazeTypeMedium
+GrazeTypeHigh
+GrazeTypeLow
+PG
+daytime_2b
+AG
+Observer_LPIChas.Jones
+Observer_LPIPaige.Byassee
+BlockC
+Observer_LAChantal.Mendiola.Orizaba
+```{r}
+best_pg <- lm(reg_data[,3] ~., data = reg_data[,c(21,17,6,12,10,20,7)])
+best_pg_coef <- summary(best_pg)$coefficients[,c(1,4)]
+write.csv(best_pg_coef,"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\best_pg_coef.csv")
+aicc(best_pg, n = nrow(best_pg$model),k=ncol(best_pg$model)-1)
+car::vif(best_pg)
+```
+# best ks
+Graze Type Medium
+Graze Type High
+Observer LPI - 5
+Annual Grass
+Observer LPI - 3
+Graze Type Low
+Filtered GI Raster
+Litter
+Block C
+```{r}
+best_ks <- lm(reg_data[,4] ~., data = reg_data[,c(21,6,12,10,14)])
+best_ks_coef <- summary(best_ks)$coefficients[,c(1,4)]
+write.csv(best_ks_coef,"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\best_ks_coef.csv")
+aicc(best_ks, n = nrow(best_ks$model),k=ncol(best_ks$model)-1)
+car::vif(best_ks)
+```
+
+# best hw
+CalibrationPaired.plot
+foliar_cover
+Observer_LAChas.Jones
+Observer_HWChantal.Mendiola.Orizaba
+plot_ungraz
+GrazeTypeMedium
+daytime_2b
+BlockD
+Experience
+StdGPScount
+```{r}
+best_hw <- lm(reg_data[,2] ~., data = reg_data[,c(8,19,9,7,21,22,6,20,23,24)])
+best_hw_coef <- summary(best_hw)$coefficients[,c(1,4)]
+write.csv(best_hw_coef,"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\best_hw_coef.csv")
+aicc(best_hw, n = nrow(best_hw$model),k=ncol(best_hw$model)-1)
+car::vif(best_hw)
+```
+
+#BEST PP
+foliar_cover
+Rock
+BlockC
+daytime_2b
+PG
+Observer_LAChristian.Trucco
+AF
+```{r}
+best_pp <- lm(reg_data[,5] ~., data = reg_data[,c(19,18,20,6,17,7,11,10)])
+best_pp_coef <- summary(best_pp)$coefficients[,c(1,4)]
+write.csv(best_pp_coef,"C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\best_pp_coef.csv")
+aicc(best_pp, n = nrow(best_pp$model),k=ncol(best_pp$model)-1)
+car::vif(best_pp)
+```
+
+
+# pp are messing everythi gup
+```{r}
+pp_full_mod <- lm(reg_data[[5]]~.,data = reg_data[,-c(2,3,4,1)])
+summary(pp_full_mod)
+```
+
+```{r}
+VarSel_fx<-function(data,var,k,cut){
+#Sensor<-"LS8"
+#Time<-"Fall"
+#var<-'MeanBiosqm'
+if (var==5){
+  x <- subset(data, !is.na(data[[var]]))
+} else {
+  x <- data
+}
+xvarlength<-length(x)
+
+k_mat <- list()
+bic_mat = list()
+listmatAll = list()
+for (i in 0:k){
+  inTrain = caret::createDataPartition(x[,var], p = 2/3, list = FALSE)
+  dfTrain=x[inTrain,]
+  dfTest=x[-inTrain,]
+  pred_all = dfTrain[,c(6:xvarlength)]
+  sb1 = dfTrain[var]
+  sb1pred = as.matrix(pred_all)
+  sb1preddf = data.frame(pred_all)
+  sb1dataall = data.frame(sb1,pred_all)
+  
+  Reg.regss = regsubsets(as.matrix(sb1dataall[,1]) ~ .,data=sb1preddf, nbest=1, method="exhaustive", intercept = TRUE, really.big = TRUE, nvmax = cut+2)
+  # 16 bqsed an stepwise regression
+  
+  # Create True false matrix for each variable
+  subsets = summary(Reg.regss, matrix.logical=TRUE, which=TRUE) # caegorical varibales being wierd
+  inout = subsets$outmat
+  best_k <- which.min(subsets$bic)
+  best_bic <- min(subsets$bic)
+  print(paste("Loop Number = ",i, sep = ""))
+  listmatAll[i+1] <- list(inout)
+  bic_mat[i+1] <- list(best_bic)
+  k_mat[i+1] <- list(best_k)
+}
+listmatshort <- lapply(listmatAll, function(x){
+x <- x[1:cut,]
+return(x)
+})
+
+# turhs function sums the variables that are selected the majority of the time
+sumvar1 <-  Reduce("+", listmatshort)
+sumvar <- data.frame(sumvar1)
+best_bic <- do.call(rbind.data.frame, bic_mat)
+best_k <- do.call(rbind.data.frame, k_mat)
+return(list(sumvar,best_bic,best_k))
+}
+
+##############################################################################
+
+test <- VarSel_fx(reg_data, var= 1, k=3)
+
+la_bootstrap <- VarSel_fx(reg_data,var = 1,k=499, cut = 9)
+write.csv(la_bootstrap[[1]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\la_bootstrap2.csv")
+write.csv(la_bootstrap[[2]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\la_bootstrap_bic.csv")
+write.csv(la_bootstrap[[3]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\la_bootstrap_k.csv")
+
+
+hw_bootstrap <- VarSel_fx(reg_data, var= 2, k=499)
+write.csv(hw_bootstrap[[1]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\hw_bootstrap2.csv")
+write.csv(hw_bootstrap[[2]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\hw_bootstrap_bic.csv")
+write.csv(hw_bootstrap[[3]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\hw_bootstrap_k.csv")
+
+pergraz_bootstrap <- VarSel_fx(reg_data, var= 3, k=499)
+write.csv(pergraz_bootstrap[[1]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\pergraz_bootstrap2.csv")
+write.csv(pergraz_bootstrap[[2]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\pergraz_bootstrap_bic.csv")
+write.csv(pergraz_bootstrap[[3]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\pergraz_bootstrap_k.csv")
+
+keyspp_bootstrap <- VarSel_fx(reg_data, var= 4, k=499)
+write.csv(keyspp_bootstrap[[1]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\keyspp_bootstrap2.csv")
+write.csv(keyspp_bootstrap[[2]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\keyspp_bootstrap_bic.csv")
+write.csv(keyspp_bootstrap[[3]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\keyspp_bootstrap_k.csv")
+
+paired_bootstrap <- VarSel_fx(reg_data, var= 5, k=499)
+write.csv(paired_bootstrap[[1]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\paired_bootstrap2.csv")
+write.csv(paired_bootstrap[[2]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\paired_bootstrap_bic.csv")
+write.csv(paired_bootstrap[[3]], "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\paired_bootstrap_k.csv")
+# how to combine categorical variables?
+```
+
+# site scale correlations
+```{r}
+alpha = 0.1
+
+reg_data_site <-  raster_values %>%
+  group_by(GrazeType, PASTURE, method) %>%
+  summarise(MeanUtil = mean(grazing_intensity, na.rm = TRUE), SdUtil = sd(grazing_intensity, na.rm = TRUE), n=n())
+
+reg_data_site$n[reg_data_site$method=="Weight Removed (Paired Plots)"] <- 2
+  reg_data_site <-  reg_data_site %>%
+    mutate(se = SdUtil/sqrt(n),
+         lower_ci = MeanUtil - qt(1-(alpha/2), n-1)*se,
+         upper_ci = MeanUtil + qt(1-(alpha/2), n-1)*se)
+  
+reg_data_site$lower_ci[reg_data_site$lower_ci<0] <- 0
+
+paddock_summary <-  read.csv("C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Zumult\\Data\\GPS_paddock_summaryv2.csv")[1:16,1:5]
+
+site_plot <- reg_data_site %>%
+  left_join(paddock_summary[,c(2,5)], by = "PASTURE")
+
+# may want to replace C2 with "very high"
+site_plot$GrazeType <-  as.character(site_plot$GrazeType)
+site_plot$GrazeType[site_plot$PASTURE=="C2"] <- "Very High"
+site_plot$GrazeType <-  as.factor(site_plot$GrazeType)
+site_plot$GrazeType <- factor(site_plot$GrazeType, levels = levels(site_plot$GrazeType)[c(1,3,4,2,5)])
+                                                                             
+ggplot(data= site_plot, aes(y = MeanUtil, x = Weighted_points, col = GrazeType))+
+  geom_point(alpha = 0.5)+
+  facet_wrap(~method,scales = "free", nrow = 2)+
+  theme_bw(base_size = 16, base_family = "serif")+
+  geom_smooth(method = "lm", se=FALSE, level = 0.90,inherit.aes = FALSE, data = site_plot, aes(x=Weighted_points, y = MeanUtil))+
+  theme(legend.position = "right",
+        strip.background = element_rect(fill = "#6D9EC1"), 
+        panel.background = element_rect(fill = "#F0F8FF"),
+        panel.spacing.x = unit(units="in",0.1),
+        plot.margin = unit(units = "in", c(0.2,0.2,0.2,0.2)))+
+  labs(y = "Field-based Grazing Intensity", x = "Weighted Sum of Cattle GPS Location Points", col = "Grazing Treatment")+
+scale_color_brewer(type = "qual", palette = 6)
+
+ggsave("site2.tif", device = "tiff", dpi = 1000, width = 12, height = 6)
+
+# regression
+
+la_site <- subset(site_plot, method == "Landscape Appearance Midpoint")
+pg_site <- subset(site_plot, method == "Percent Grazed Cover (LPI)")
+ks_site <- subset(site_plot, method == "Percent Key Species Grazed (LPI)")
+hw_site <- subset(site_plot, method == "Weight Removed (Heights)")
+pp_site <- subset(site_plot, method == "Weight Removed (Paired Plots)")
+
+la_site_mod <- summary(lm(MeanUtil ~ Weighted_points,data = la_site))
+pg_site_mod <- summary(lm(MeanUtil ~ Weighted_points,data = pg_site))
+ks_site_mod <- summary(lm(MeanUtil ~ Weighted_points,data = ks_site))
+hw_site_mod <- summary(lm(MeanUtil ~ Weighted_points,data = hw_site))
+pp_site_mod <- summary(lm(MeanUtil ~ Weighted_points,data = pp_site))
+
+la_site_mod
+pg_site_mod
+ks_site_mod
+hw_site_mod
+pp_site_mod
+```
+# Treatment plot
+
+```{r}
+alpha = 0.1
+
+raster_values$GrazeType <- as.character(raster_values$GrazeType)
+raster_values$GrazeType[raster_values$PASTURE=="C2"] <- "High"
+
+trmt_data <-  raster_values %>%
+  filter(PASTURE !="C2",
+         PASTURE != "C1")%>%
+  group_by(GrazeType, method) %>%
+  summarise(MeanUtil = mean(grazing_intensity, na.rm = TRUE), SdUtil =sd(grazing_intensity, na.rm = TRUE), n=n())
+
+  trmt_data <-  trmt_data %>%
+    mutate(se = SdUtil/sqrt(n),
+         lower_ci = MeanUtil - qt(1-(alpha/2), n-1)*se,
+         upper_ci = MeanUtil + qt(1-(alpha/2), n-1)*se)
+
+trmt_data$lower_ci[trmt_data$lower_ci<0] <- 0
+
+# may want to replace C2 with "very high"
+
+trmt_data$GrazeType <-  as.factor(trmt_data$GrazeType)
+trmt_data$GrazeType <- factor(trmt_data$GrazeType, levels = levels(trmt_data$GrazeType)[c(1,3,4,2)])
+
+dodge <- position_dodge(width = 0.88)
+
+ggplot(trmt_data, aes(x = GrazeType, y = MeanUtil, fill = method))+
+  geom_col(position = dodge, alpha = 0.5, width = 0.85)+
+  theme_classic(base_size = 18, base_family = "serif")+
+  scale_fill_brewer(type = "div",palette = 9)+
+  labs(x = "Grazing Treatment", y = "% Field Grazing Intensity", fill = "")+
+  geom_errorbar(aes(ymin=lower_ci, ymax=upper_ci),alpha = 0.5, width = 0.2, position = dodge)+
+  coord_cartesian(y = c(0,50))+
+  theme(legend.position = "bottom")+guides(fill=guide_legend(nrow=2,byrow=TRUE))
+
+ggsave("trmt_plot.tif", device = "tiff", dpi = 1000, width = 14, height = 8)
+```
+
+# cor mats
+```{r}
+data_list <-  c(la_site,pg_site,ks_site,hw_site,pp_site)
+
+list <- list()
+# this is BS
+for(elements in site_plot$Method){
+  for(levels in site_plot$GrazeType){
+    list[[paste(levels, elements)]] <- subset(site_plot$MeanUtil, site_plot$Method == elements)
+  }
+}
+
+cor_data <- reg_data[,c(1:5,21)]
+
+by(dcor(cor_data[,c(1:5)], use = "complete.obs")
+
+corrplot::corrplot(cor_mat[[1]],method = "number")
+corrplot::corrplot(cor_mat[["High"]],method = "number")
+corrplot::corrplot(cor_mat[[3]],method = "number")
+corrplot::corrplot(cor_mat[[4]],method = "number")
+
+write.csv(cor_mat[[1]],"C:/Users/Alexander/OneDrive - University of Idaho/UI/Thesis/Grouse and Grazing/Data/cor_control.csv")
+write.csv(cor_mat[[2]],"C:/Users/Alexander/OneDrive - University of Idaho/UI/Thesis/Grouse and Grazing/Data/cor_high.csv")
+write.csv(cor_mat[[3]],"C:/Users/Alexander/OneDrive - University of Idaho/UI/Thesis/Grouse and Grazing/Data/cor_low.csv")
+write.csv(cor_mat[[4]],"C:/Users/Alexander/OneDrive - University of Idaho/UI/Thesis/Grouse and Grazing/Data/cor_medium.csv")
+```
+
+# Table 4 - lm of rasters to plots
+```{r}
+table4 <-  raster_values_wide[,c(1,4,6,23,24,25,31,38:41)]
+table4 <- table4 %>%
+  left_join(filter_2by2, by=c("PlotID"="PLOTID"))%>%
+  left_join(basic_2by2, by = c("PlotID"="PLOTID"))
+#LA
+
+la_basic <- summary(lm(data = table4, mn_mdpn ~ basic_2by2))$adj.r.squared
+la_filter <- summary(lm(data = table4, mn_mdpn ~ filter_2by2))$adj.r.squared
+la_5 <- summary(lm(data = table4, mn_mdpn ~ mean_5by5))$adj.r.squared
+
+# hw
+hw_basic <- summary(lm(data = table4, Avg_Utl ~ basic_2by2))$adj.r.squared
+hw_filter <- summary(lm(data = table4, Avg_Utl ~ filter_2by2))$adj.r.squared
+hw_5 <- summary(lm(data = table4, Avg_Utl ~ mean_5by5))$adj.r.squared
+
+# pp
+# replace 0 with na
+table4$Mean_tl[table4$CagePlt==0] <- NA
+pp_basic <- summary(lm(data = table4, Mean_tl ~ basic_2by2))$adj.r.squared
+pp_filter <- summary(lm(data = table4, Mean_tl ~ filter_2by2))$adj.r.squared
+pp_5 <- summary(lm(data = table4, Mean_tl ~ mean_5by5))$adj.r.squared
+
+# gc
+gc_basic <- summary(lm(data = table4, Prcnt_G ~ basic_2by2))$adj.r.squared
+gc_filter <- summary(lm(data = table4, Prcnt_G ~ filter_2by2))$adj.r.squared
+gc_5 <- summary(lm(data = table4, Prcnt_G ~ mean_5by5))$adj.r.squared
+
+#ks
+ks_basic <- summary(lm(data = table4, prp_pg_ ~ basic_2by2))$adj.r.squared
+ks_filter <- summary(lm(data = table4, prp_pg_ ~ filter_2by2))$adj.r.squared
+ks_5 <- summary(lm(data = table4, prp_pg_ ~ mean_5by5))$adj.r.squared
+
+adjr <- rbind(c(la_basic,la_filter, la_5),c(hw_basic,hw_filter, hw_5),c(pp_basic,pp_filter, pp_5),c(gc_basic,gc_filter, gc_5),c(ks_basic,ks_filter, ks_5))
+
+colnames(adjr) <- c("Basic", "Filtered", "Fine")
+row.names(adjr) <- c("LA","HW","PP","GC","KS")
+
+write.csv(adjr, "C:\\Users\\Alexander\\OneDrive - University of Idaho\\UI\\Thesis\\Grouse and Grazing\\Data\\adjr.csv")
+```
+
+Some additional work for rangelands 7.7.20
+```{r}
+dir <- "C:\\Users\\alaurencetraynor\\Documents\\2019\\UI\\Zumwalt"
+reg_data <- read.csv(file = (paste0(dir,"\\", "reg_data.csv")))
+all_plot_raster <- read.csv(file = (paste0(dir,"\\", "all_plot_raster.csv")))
+plot_treatments <- read.csv(file = (paste0(dir,"\\", "plot_treatments.csv")))
+colnames(plot_treatments)[1] <- "PlotID"
+
+paddock_summary <-read.csv(file = (paste0(dir,"\\", "GPS_paddock_summaryv2.csv")))[c(1:16),c(1:5)]
+
+raster_treatments <- merge(x = all_plot_raster,
+                           y = plot_treatments[,c(1,8,10)],
+                           by = "PlotID")
+# make method long
+raster_treatments <-  pivot_longer(raster_treatments, c(4,6,23,24,25))
+
+# boxplots
+ggplot(raster_treatments, aes(x= as.factor(AUMha), y = value, fill = name))+
+  geom_boxplot()+
+  facet_wrap(.~Calbrtn, nrow =2,ncol= 2)+
+  theme_classic(base_size = 16, base_family = "serif")+
+  theme(legend.position = "bottom")+
+  labs(x = "Animal Unit Months per Hectare", y = "Grazing Intensity (%)", fill = "Method")+
+  scale_fill_brewer(type = "div", labels = c("Height-weight",
+                                             "Paired-plots",
+                                             "Landscape Appearance",
+                                             "Grazed Cover (LPI)",
+                                             "Proportion of forage species grazed (LPI)"))
+
+# boxplots without calibration
+ggplot(raster_treatments, aes(x= as.factor(AUMha), y = value, fill = name))+
+  geom_boxplot()+
+  theme_classic(base_size = 16, base_family = "serif")+
+  theme(legend.position = "bottom")+
+  labs(x = "Animal Unit Months per Hectare", y = "Grazing Intensity (%)", fill = "Method")+
+  scale_fill_brewer(type = "div", labels = c("Height-weight",
+                                             "Landscape Appearance",
+                                             "Grazed Cover (LPI)",
+                                             "Proportion of forage species grazed (LPI)"))
+
+```
+
+```{r}
+
+# now with summarised data and CIs
+trmt_data <-  raster_treatments %>%
+  group_by(name, AUMha) %>%
+  summarise(MeanUtil = mean(value, na.rm = TRUE), SdUtil =sd(value, na.rm = TRUE), n=n())
+
+alpha <- 0.1
+
+  trmt_data <-  trmt_data %>%
+    mutate(se = SdUtil/sqrt(n),
+         lower_ci = MeanUtil - qt(1-(alpha/2), n-1)*se,
+         upper_ci = MeanUtil + qt(1-(alpha/2), n-1)*se)
+
+trmt_data$lower_ci[trmt_data$lower_ci<0] <- 0
+```
+random stats
+```{r}
+mod <- aov(data = raster_treatments, value ~ Calbrtn * name * as.factor(AUMha))
+
+model.tables(mod, "effects")
+
+plot.design(data = raster_treatments, value ~ Calbrtn * name * as.factor(AUMha))
+```
+
+```{r}
+# may want to replace C2 with "very high"
+dodge <- position_dodge(width = 0.75)
+dodge1 <- position_dodge2(width = 1)
+
+trmt_data$name <- factor(trmt_data$name, levels = c("Avg_Utl","mn_mdpn","Mean_tl", "Prcnt_G","prp_pg_"))
+
+ggplot(subset(trmt_data, name != "prp_pg_" & name != "Prcnt_G" & AUMha != "1.25"), aes(x = as.factor(AUMha), y = MeanUtil, fill = name))+
+  geom_col(position = dodge1, width = 0.75)+
+  theme_classic(base_size = 12, base_family = "serif")+
+  scale_fill_manual(values = my.cols,
+                    labels = c("Height-weight","Landscape Appearance",                         "Paired-plots"))+
+  labs(x = "Grazing Treatment", y = "% Field Grazing Intensity", fill = "")+
+ geom_errorbar(aes(ymin=lower_ci, ymax=upper_ci),alpha = 0.5, width = 0.2, position = dodge)+
+  coord_cartesian(y = c(0,45))+
+  theme(legend.position = "bottom")+guides(fill=guide_legend(nrow=1,byrow=TRUE)) +
+  labs(x = "Animal Unit Months per Hectare", y = "Utilization (%)", fill = "")+
+  scale_y_continuous(breaks = c(5,10,15,20,25,30,35,40,45))
+
+ggsave("trmt_plot.tif", device = "tiff", dpi = 300, width = 6, height = 5)
+```
+
